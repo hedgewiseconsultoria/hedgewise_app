@@ -1,5 +1,4 @@
-streamli
-huggingface_hub
-torch
-transformers
-protobuf
+streamlit==1.39.0
+huggingface_hub==0.25.2
+protobuf==5.28.2
+requests==2.32.3
