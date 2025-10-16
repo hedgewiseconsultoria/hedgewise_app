@@ -66,17 +66,6 @@ Você é um analista financeiro da Hedgewise.
 
 Analise as movimentações bancárias abaixo e retorne um JSON estruturado em colunas de data, histórico, valor, tipo (despesa ou receita), categoria (identificando do que se trata aquela movimentação) e natureza da movimentaççãio (Pessoal ou Empresarial)  no seguinte formato:
 
-[
-  {{
-    "data": "AAAA-MM-DD",
-    "descricao": "texto descritivo da movimentação",
-    "valor": -1000.00,
-    "tipo": "Despesa ou Receita",
-    "categoria": "Categoria resumida (ex: Tarifa, Transferência, Pagamento, Investimento, etc.)",
-    "natureza": "Pessoal ou Empresarial"
-  }}
-]
-
 Movimentações extraídas:
 {texto_formatado}
     """
@@ -118,4 +107,5 @@ Movimentações extraídas:
     except Exception as e:
         st.warning("⚠️ Falha ao interpretar o JSON. Veja a resposta completa abaixo:")
         st.text_area("Resposta completa da IA:", result, height=300)
+
 
