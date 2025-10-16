@@ -135,7 +135,7 @@ def parse_json_resposta(texto_json):
 if uploaded_file:
     bytes_pdf = uploaded_file.read()
     st.info("Extraindo texto do PDF…")
-    texto = extrair_texto_pdf(bytes_pdf, use_ocr=use_ocr)
+    texto = extrair_texto_pdf(bytes_pdf, usar_ocr=use_ocr)
 
     if not texto:
         st.warning("Não foi possível extrair texto. Tente ativar o OCR.")
@@ -180,5 +180,6 @@ Extrato:
                 )
             else:
                 st.error("Falha ao interpretar o JSON da resposta.")
+
 
 
