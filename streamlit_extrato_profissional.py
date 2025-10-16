@@ -91,16 +91,16 @@ Movimentações extraídas:
 
     try:
         client = InferenceClient(
-            provider="featherless-ai",
-            api_key=os.environ["HF_TOKEN"],
+            model="meta-llama/Llama-3.1-8B",
+            token=os.environ["HF_TOKEN"]
         )
 
         result = client.text_generation(
             prompt,
-            model="meta-llama/Llama-3.1-8B",
             max_new_tokens=2000,
             temperature=0.2,
         )
+
     except Exception as e:
         st.error(f"Erro ao conectar com a API da Hugging Face: {e}")
         st.stop()
@@ -119,3 +119,4 @@ Movimentações extraídas:
     except Exception as e:
         st.warning("⚠️ Falha ao interpretar o JSON. Veja a resposta completa abaixo:")
         st.text_area("Resposta completa da IA:", result, height=300)
+
