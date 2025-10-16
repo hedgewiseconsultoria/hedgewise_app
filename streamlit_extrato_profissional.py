@@ -64,7 +64,7 @@ if uploaded_file:
     prompt = f"""
 Você é um analista financeiro da Hedgewise.
 
-Analise as movimentações bancárias abaixo e retorne um JSON estruturado, no seguinte formato:
+Analise as movimentações bancárias abaixo e retorne um JSON estruturado em colunas de data, histórico, valor, tipo (despesa ou receita), categoria (identificando do que se trata aquela movimentação) e natureza da movimentaççãio (Pessoal ou Empresarial)  no seguinte formato:
 
 [
   {{
@@ -118,3 +118,4 @@ Movimentações extraídas:
     except Exception as e:
         st.warning("⚠️ Falha ao interpretar o JSON. Veja a resposta completa abaixo:")
         st.text_area("Resposta completa da IA:", result, height=300)
+
