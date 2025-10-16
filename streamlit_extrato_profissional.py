@@ -85,7 +85,7 @@ Movimentações extraídas:
 
         result = client.text_generation(
             prompt,
-            model="meta-llama/Llama-3.1-8B-Instruct",
+            model="mistralai/Mistral-7B-Instruct-v0.2",
             max_new_tokens=2000,
             temperature=0.2,
         )
@@ -107,6 +107,7 @@ Movimentações extraídas:
     except Exception as e:
         st.warning("⚠️ Falha ao interpretar o JSON. Veja a resposta completa abaixo:")
         st.text_area("Resposta completa da IA:", result, height=300)
+
 
 
 
