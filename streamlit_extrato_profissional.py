@@ -5,8 +5,8 @@ import json
 import os
 import base64
 from io import BytesIO
-from pdf2image import convert_from_path
 import pytesseract
+from pdf2image import convert_from_bytes
 from huggingface_hub import InferenceClient
 
 # --- Configuração da página ---
@@ -89,17 +89,25 @@ client = InferenceClient(
 # --- Funções auxiliares ---
 def extrair_texto_pdf(pdf_bytes, usar_ocr=False):
     texto = ""
-    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
-        for pagina in pdf.pages:
-            t = pagina.extract_text()
-            if t:
-                texto += t + "\n"
+    try:
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            for pagina in pdf.pages:
+                t = pagina.extract_text()
+                if t:
+                    texto += t + "\n"
+    except Exception as e:
+        st.error(f"Erro ao ler PDF: {e}")
+        return ""
+
     texto = texto.strip()
 
     if usar_ocr and not texto:
-        imagens = convert_from_path(BytesIO(pdf_bytes))
-        for img in imagens:
-            texto += pytesseract.image_to_string(img, lang="por") + "\n"
+        try:
+            imagens = convert_from_bytes(pdf_bytes)
+            for img in imagens:
+                texto += pytesseract.image_to_string(img, lang="por") + "\n"
+        except Exception as e:
+            st.error(f"Erro no OCR: {e}")
 
     return texto.strip()
 
