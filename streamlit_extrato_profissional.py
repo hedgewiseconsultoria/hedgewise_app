@@ -23,28 +23,21 @@ st.set_page_config(
 # ==============================
 st.markdown("""
     <style>
-    /* Corpo */
     html, body, [class*="st-"] {
         font-family: 'Inter', sans-serif;
         background-color: #F7F8FA;
         color: #111827;
     }
-
-    /* Container principal */
     .block-container {
         padding-top: 2rem;
         padding-left: 3rem;
         padding-right: 3rem;
     }
-
-    /* Títulos */
     h1, h2, h3 {
         color: #0A2342 !important;
         letter-spacing: -0.3px;
         font-weight: 600 !important;
     }
-
-    /* Botões */
     .stButton>button {
         background-color: #004AAD;
         color: #FFFFFF;
@@ -58,14 +51,10 @@ st.markdown("""
         background-color: #003580;
         transform: translateY(-1px);
     }
-
-    /* Sidebar */
     [data-testid="stSidebar"] {
         background-color: #FFFFFF;
         border-right: 1px solid #E5E7EB;
     }
-
-    /* Card */
     .card {
         background-color: #FFFFFF;
         border-radius: 12px;
@@ -73,8 +62,6 @@ st.markdown("""
         box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
         margin-top: 1rem;
     }
-
-    /* Métricas */
     [data-testid="stMetricValue"] {
         color: #004AAD !important;
         font-weight: 700 !important;
@@ -104,8 +91,12 @@ st.markdown("Envie seu extrato em PDF para análise automática e categorizaçã
 # TOKEN E ENDPOINT
 # ==============================
 HF_TOKEN = os.getenv("HF_TOKEN")
-API_URL = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct"
+# ✅ endpoint correto
+API_URL = "https://api-inference.huggingface.co/models/meta-llama/Llama-3-8b-instruct"
 HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+# fallback – modelo alternativo leve
+FALLBACK_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
 
 # ==============================
 # FUNÇÕES AUXILIARES
@@ -127,22 +118,28 @@ def extrair_texto_pdf(pdf_bytes, usar_ocr=False):
         imagens = convert_from_bytes(pdf_bytes)
         for img in imagens:
             texto += pytesseract.image_to_string(img, lang="por") + "\n"
-
     return texto.strip()
 
-def chamar_llama3(prompt_text):
-    """Chama o modelo Llama 3 via API do Hugging Face."""
-    payload = {"inputs": prompt_text, "parameters": {"max_new_tokens": 1000, "temperature": 0.0}}
+def chamar_modelo(prompt_text):
+    """Chama o modelo Llama 3 via API, com fallback automático."""
+    payload = {"inputs": prompt_text,
+               "parameters": {"max_new_tokens": 1000, "temperature": 0.0}}
     try:
         resp = requests.post(API_URL, headers=HEADERS, json=payload, timeout=120)
         resp.raise_for_status()
         data = resp.json()
-        if isinstance(data, list):
-            return data[0].get("generated_text", "")
-        return data.get("generated_text", "")
     except Exception as e:
-        st.error(f"Erro na comunicação com o Hugging Face: {e}")
-        return ""
+        st.warning(f"Erro com Llama 3: {e}. Tentando fallback...")
+        try:
+            resp = requests.post(FALLBACK_URL, headers=HEADERS, json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e2:
+            st.error(f"Erro também no fallback: {e2}")
+            return ""
+    if isinstance(data, list):
+        return data[0].get("generated_text", "")
+    return data.get("generated_text", "")
 
 def parse_json_resposta(texto_json):
     """Converte a resposta JSON do modelo em DataFrame."""
@@ -174,11 +171,11 @@ data, descricao, valor, tipo (Receita ou Despesa), categoria, natureza (Pessoal 
 Extrato:
 {texto}
 """
-        with st.spinner("Processando dados com o Llama 3..."):
-            resposta = chamar_llama3(prompt)
+        with st.spinner("Processando dados com IA..."):
+            resposta = chamar_modelo(prompt)
 
         if not resposta:
-            st.error("Não houve resposta do modelo.")
+            st.error("Nenhuma resposta obtida do modelo.")
         else:
             st.subheader("Resposta da IA (JSON)")
             st.code(resposta, language="json")
