@@ -91,7 +91,7 @@ st.markdown("Envie seu extrato em PDF para análise automática e categorizaçã
 # TOKEN E ENDPOINT
 # ==============================
 HF_TOKEN = os.getenv("HF_TOKEN")
-API_URL = "https://api-inference.huggingface.co/models/meta-llama/Llama-3.1-8B-Instruct"
+API_URL = "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct"
 HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 
@@ -202,5 +202,6 @@ Extrato:
                 )
             else:
                 st.error("Falha ao interpretar o JSON retornado pelo modelo.")
+
 
 
