@@ -9,7 +9,7 @@ from io import BytesIO
 # Configuração do Streamlit
 # -------------------------------------------------
 st.set_page_config(page_title="Hedgewise - Extrato Profissional", layout="wide")
-st.title("💼 Análise de Extrato Bancário com Llama 3.1")
+st.title("💼 Análise de Extrato Bancário com Mistral 7B Instruct v0.3")
 
 uploaded_file = st.file_uploader("📎 Envie o extrato bancário em PDF", type=["pdf"])
 
@@ -51,7 +51,7 @@ if uploaded_file:
     st.dataframe(df_transacoes, use_container_width=True)
 
     # -------------------------------------------------
-    # Preparar texto limpo para o modelo Llama
+    # Preparar texto limpo para o modelo Mistral
     # -------------------------------------------------
     texto_formatado = "\n".join(
         f"{row.Data} | {row['Histórico']} | {row['Valor']} | {row['Tipo']}"
@@ -59,12 +59,20 @@ if uploaded_file:
     )
 
     # -------------------------------------------------
-    # Prompt de análise para o Llama 3.1 via Hugging Face
+    # Prompt de análise
     # -------------------------------------------------
     prompt = f"""
 Você é um analista financeiro da Hedgewise.
 
-Analise as movimentações bancárias abaixo e retorne um JSON estruturado em colunas de data, histórico, valor, tipo (despesa ou receita), categoria (identificando do que se trata aquela movimentação) e natureza da movimentaççãio (Pessoal ou Empresarial)  no seguinte formato:
+Analise as movimentações bancárias abaixo e retorne um JSON estruturado com as colunas:
+- data
+- histórico
+- valor
+- tipo (despesa ou receita)
+- categoria (identificando do que se trata aquela movimentação)
+- natureza (Pessoal ou Empresarial)
+
+Responda apenas com o JSON.
 
 Movimentações extraídas:
 {texto_formatado}
@@ -74,21 +82,31 @@ Movimentações extraídas:
         st.text_area("Prompt:", prompt, height=300)
 
     # -------------------------------------------------
-    # Envio ao modelo Llama 3.1 (Hugging Face Inference)
+    # Envio ao modelo Mistral 7B Instruct v0.3
     # -------------------------------------------------
-    st.info("Analisando o extrato com IA (Llama 3.1)…")
+    st.info("Analisando o extrato com IA (Mistral 7B Instruct v0.3)…")
 
     HF_TOKEN = os.getenv("HF_TOKEN")
+
+    if not HF_TOKEN:
+        st.error("Token do Hugging Face (HF_TOKEN) não configurado. Adicione nas Secrets do Streamlit.")
+        st.stop()
 
     try:
         client = InferenceClient(api_key=HF_TOKEN)
 
-        result = client.text_generation(
-            prompt,
-            model="mistralai/Mistral-7B-Instruct-v0.2",
-            max_new_tokens=2000,
+        result = client.chat_completion(
+            model="mistralai/Mistral-7B-Instruct-v0.3",
+            messages=[
+                {"role": "system", "content": "Você é um analista financeiro experiente da Hedgewise."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=2000,
             temperature=0.2,
         )
+
+        resposta_texto = result.choices[0].message["content"]
+
     except Exception as e:
         st.error(f"Erro ao conectar com a API da Hugging Face: {e}")
         st.stop()
@@ -99,15 +117,11 @@ Movimentações extraídas:
     st.subheader("📊 Resultado da IA")
 
     try:
-        json_inicio = result.find("[")
-        json_fim = result.rfind("]") + 1
-        json_text = result[json_inicio:json_fim]
+        json_inicio = resposta_texto.find("[")
+        json_fim = resposta_texto.rfind("]") + 1
+        json_text = resposta_texto[json_inicio:json_fim]
         dados = json.loads(json_text)
         st.json(dados)
     except Exception as e:
         st.warning("⚠️ Falha ao interpretar o JSON. Veja a resposta completa abaixo:")
-        st.text_area("Resposta completa da IA:", result, height=300)
-
-
-
-
+        st.text_area("Resposta completa da IA:", resposta_texto, height=300)
