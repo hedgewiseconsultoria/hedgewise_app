@@ -1,10 +1,16 @@
-streamlit
-pdfplumber
-pandas
-requests
-pdf2image
-pytesseract
-pillow
-openpyxl
-transformers
-huggingface_hub
+# Interface principal
+streamlit>=1.37.0
+
+# Manipulação e extração de texto de PDF
+pdfminer.six>=20221105
+pdf2image>=1.17.0
+pytesseract>=0.3.10
+pillow>=10.2.0
+
+# Integração com Hugging Face API
+huggingface_hub>=0.24.5
+requests>=2.32.3
+python-dotenv>=1.0.1
+
+# Utilitários gerais
+regex>=2023.12.25
