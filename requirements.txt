@@ -1,16 +1,33 @@
-# Interface principal
-streamlit>=1.37.0
+# -----------------------------
+# Dependências principais do app
+# -----------------------------
+streamlit==1.39.0
+pandas==2.2.3
+numpy==2.1.2
 
-# Manipulação e extração de texto de PDF
-pdfminer.six>=20221105
-pdf2image>=1.17.0
-pytesseract>=0.3.10
-pillow>=10.2.0
+# -----------------------------
+# Extração e OCR de PDFs
+# -----------------------------
+pdfplumber==0.11.3
+pdfminer.six==20240706
+pdf2image==1.17.0
+pytesseract==0.3.13
+Pillow==10.4.0
 
-# Integração com Hugging Face API
-huggingface_hub>=0.24.5
-requests>=2.32.3
-python-dotenv>=1.0.1
+# -----------------------------
+# Integração com IA (Hugging Face)
+# -----------------------------
+huggingface_hub==0.25.2
+requests==2.32.3
 
-# Utilitários gerais
-regex>=2023.12.25
+# -----------------------------
+# Utilidades e segurança
+# -----------------------------
+python-dotenv==1.0.1
+regex==2024.9.11
+
+# -----------------------------
+# Compatibilidade no Streamlit Cloud
+# -----------------------------
+protobuf==5.28.2
+tqdm==4.66.5
