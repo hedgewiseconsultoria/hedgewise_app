@@ -98,7 +98,7 @@ Movimentações extraídas:
     st.info("Enviando dados para o Llama 3.1…")
 
     client = InferenceClient(
-    model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+    model="meta-llama/Meta-Llama-3.1-8B",
     token=os.environ["HF_TOKEN"],
     )
 
@@ -127,4 +127,5 @@ Movimentações extraídas:
     except Exception as e:
         st.warning("⚠️ Falha ao interpretar o JSON retornado.")
         st.text_area("Resposta completa da IA:", result, height=300)
+
 
