@@ -149,6 +149,9 @@ if uploaded_file:
         st.warning("Não foi possível extrair texto. Tente ativar o OCR.")
     else:
         st.success("Texto extraído com sucesso.")
+        with st.expander("📄 Ver texto extraído do PDF"):
+        st.text_area("Conteúdo extraído:", texto, height=300)
+
         prompt = f"""
 Você é um assistente financeiro da Hedgewise.
 Analise o extrato abaixo e devolva **somente** um JSON estruturado com as chaves:
@@ -188,4 +191,5 @@ Extrato:
                 )
             else:
                 st.error("Falha ao interpretar o JSON da resposta.")
+
 
