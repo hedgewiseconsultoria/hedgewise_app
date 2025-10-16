@@ -150,37 +150,55 @@ if uploaded_file:
     else:
         st.success("Texto extraído com sucesso.")
 
+        # --- Exibir o texto extraído ---
         with st.expander("📄 Ver texto extraído do PDF"):
             st.text_area("Conteúdo extraído:", texto, height=300)
+            st.caption(f"📝 Texto extraído: {len(texto)} caracteres")
 
+        # --- Limpeza básica para remover ruído e menus ---
+        texto_limpo = []
+        for linha in texto.splitlines():
+            if any(palavra in linha.upper() for palavra in ["DATA", "HISTÓRICO", "DOCUMENTO", "VALOR", "SALDO", "TED", "PIX", "DEBITO", "CREDITO", "PAGAMENTO", "APLICACAO", "RESGATE"]):
+                texto_limpo.append(linha)
+            elif any(ch.isdigit() for ch in linha) and ("R$" in linha or "," in linha):
+                texto_limpo.append(linha)
+        texto = "\n".join(texto_limpo)
+
+        # --- Checagem se contém dados de movimentação ---
+        if "TED" not in texto and "PIX" not in texto and "SALDO" not in texto:
+            st.error("O texto extraído não parece conter movimentações bancárias válidas. Verifique o PDF.")
+            st.stop()
+
+        # --- Prompt refinado ---
         prompt = f"""
-Você é um assistente financeiro da Hedgewise.
-Analise o extrato bancário abaixo e retorne **somente** um JSON válido.
-Não escreva nenhum texto explicativo, apenas o JSON puro.
-As chaves devem ser: data, descricao, valor, tipo (Receita ou Despesa), categoria, natureza (Pessoal ou Empresarial).
+Você é um analista financeiro da Hedgewise.
+Extraia do texto abaixo **somente as movimentações financeiras** do extrato bancário.
+Ignore cabeçalhos, rodapés e textos institucionais.
+Retorne **apenas um JSON válido**, no seguinte formato:
 
-Exemplo de formato esperado:
 [
   {{
-    "data": "2024-01-05",
-    "descricao": "Pagamento fornecedor",
-    "valor": -1200.50,
-    "tipo": "Despesa",
-    "categoria": "Serviços",
-    "natureza": "Empresarial"
+    "data": "AAAA-MM-DD",
+    "descricao": "texto descritivo da movimentação",
+    "valor": -1000.00,
+    "tipo": "Despesa ou Receita",
+    "categoria": "Categoria resumida (ex: Tarifa, Transferência, Pagamento, Investimento, etc.)",
+    "natureza": "Pessoal ou Empresarial"
   }}
 ]
 
-Extrato:
+Extrato bancário:
 {texto}
 """
 
         with st.expander("🔎 Ver prompt enviado ao modelo"):
             st.text_area("Prompt:", prompt, height=300)
 
+        # --- Chamada ao modelo ---
         with st.spinner("Processando com Llama 3.1 (Hugging Face)…"):
             resposta = chamar_llama3_huggingface(prompt)
 
+        # --- Extrair apenas o JSON ---
         if resposta:
             import re
             match = re.search(r"\[.*\]", resposta, re.DOTALL)
