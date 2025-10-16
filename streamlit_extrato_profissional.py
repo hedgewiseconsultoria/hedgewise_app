@@ -1,40 +1,36 @@
 import os
 import streamlit as st
-from openai import OpenAI
+from huggingface_hub import InferenceClient
 
-# ---------------------------------------------
-# Configuração do Streamlit
-# ---------------------------------------------
-st.set_page_config(page_title="Teste Llama 3.1 - Hugging Face (Novita)", layout="centered")
-st.title("🦙 Teste de Conexão com Llama 3.1 via Hugging Face / Novita")
+st.set_page_config(page_title="Teste Llama 3.1 - Provider Novita", layout="centered")
+st.title("🦙 Teste de Conexão com Llama 3.1 via Hugging Face (Provider Novita)")
 
-# Token da Hugging Face
+# --- Token da Hugging Face ---
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 if not HF_TOKEN:
-    st.error("❌ Variável de ambiente HF_TOKEN não encontrada. Configure no Secrets do Streamlit Cloud.")
+    st.error("❌ Variável de ambiente HF_TOKEN não encontrada. Configure-a nos Secrets do Streamlit Cloud.")
     st.stop()
 
-# Inicializa o cliente OpenAI apontando para o roteador Hugging Face
+# --- Inicializa o cliente com provider novita ---
 try:
-    client = OpenAI(
-        base_url="https://router.huggingface.co/v1",
+    client = InferenceClient(
+        provider="novita",
         api_key=HF_TOKEN,
     )
-    st.success("✅ Cliente inicializado com sucesso (via Novita / Hugging Face).")
+    st.success("✅ Cliente inicializado com sucesso (provider=novita).")
 except Exception as e:
-    st.error(f"Erro ao inicializar o cliente: {e}")
+    st.error(f"Erro ao inicializar o cliente da Hugging Face: {e}")
     st.stop()
 
-# Campo de texto para o prompt
-prompt = st.text_area("Digite seu prompt para o Llama 3.1:", "Qual é a capital da França?")
+# --- Prompt de entrada ---
+prompt = st.text_area("Digite sua pergunta:", "Qual é a capital da França?")
 
-# Botão para enviar à IA
+# --- Botão para enviar ---
 if st.button("🚀 Enviar para o Llama 3.1"):
-    st.info("Chamando o modelo Llama 3.1… aguarde.")
     try:
         completion = client.chat.completions.create(
-            model="meta-llama/Llama-3.1-8B-Instruct:novita",
+            model="meta-llama/Llama-3.1-8B-Instruct",
             messages=[
                 {
                     "role": "user",
@@ -43,8 +39,9 @@ if st.button("🚀 Enviar para o Llama 3.1"):
             ],
         )
 
-        st.subheader("🧩 Resposta da IA:")
-        st.write(completion.choices[0].message["content"])
+        resposta = completion.choices[0].message["content"]
+        st.subheader("🧠 Resposta do modelo:")
+        st.write(resposta)
 
     except Exception as e:
         st.error(f"Erro ao chamar a API: {e}")
