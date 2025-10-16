@@ -18,14 +18,20 @@ if not HF_TOKEN:
 # Inicializa o cliente
 try:
     client = InferenceClient(
-        provider="featherless-ai",  # funciona apenas até huggingface_hub 0.20.3
-        api_key=HF_TOKEN,
+    provider="novita",
+    api_key=os.environ["HF_TOKEN"],
     )
-    st.success("✅ Cliente inicializado com sucesso.")
-except Exception as e:
-    st.error(f"Erro ao inicializar o cliente da Hugging Face: {e}")
-    st.stop()
+    completion = client.chat.completions.create(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    messages=[
+        {
+            "role": "user",
+            "content": "What is the capital of France?"
+        }
+      ],
+    )
 
+    print(completion.choices[0].message)
 # Campo de texto para o prompt
 prompt = st.text_area("Digite seu prompt para o Llama 3.1:", "Qual é a capital da França?")
 
@@ -43,3 +49,4 @@ if st.button("🚀 Enviar para o Llama 3.1"):
         st.write(result)
     except Exception as e:
         st.error(f"Erro ao chamar a API: {e}")
+
