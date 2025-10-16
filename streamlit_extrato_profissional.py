@@ -65,7 +65,7 @@ with st.sidebar:
     st.markdown("### Hedgewise")
     st.caption("Risco Controlado • Inteligência Financeira")
     st.markdown("---")
-    use_ocr = st.checkbox("Ativar OCR (PDF escaneado)", value=False)
+    usar_ocr = st.checkbox("Ativar OCR (PDF escaneado)", value=False)
     st.markdown("Versão MVP • Llama 3.1 via Hugging Face")
 
 # --- Cabeçalho ---
@@ -143,25 +143,49 @@ def parse_json_resposta(texto_json):
 if uploaded_file:
     bytes_pdf = uploaded_file.read()
     st.info("Extraindo texto do PDF…")
-    texto = extrair_texto_pdf(bytes_pdf, usar_ocr=use_ocr)
+    texto = extrair_texto_pdf(bytes_pdf, usar_ocr=usar_ocr)
 
     if not texto:
         st.warning("Não foi possível extrair texto. Tente ativar o OCR.")
     else:
         st.success("Texto extraído com sucesso.")
+
         with st.expander("📄 Ver texto extraído do PDF"):
-        st.text_area("Conteúdo extraído:", texto, height=300)
+            st.text_area("Conteúdo extraído:", texto, height=300)
 
         prompt = f"""
 Você é um assistente financeiro da Hedgewise.
-Analise o extrato abaixo e devolva **somente** um JSON estruturado com as chaves:
-data, descricao, valor, tipo (Receita ou Despesa), categoria, natureza (Pessoal ou Empresarial).
+Analise o extrato bancário abaixo e retorne **somente** um JSON válido.
+Não escreva nenhum texto explicativo, apenas o JSON puro.
+As chaves devem ser: data, descricao, valor, tipo (Receita ou Despesa), categoria, natureza (Pessoal ou Empresarial).
+
+Exemplo de formato esperado:
+[
+  {{
+    "data": "2024-01-05",
+    "descricao": "Pagamento fornecedor",
+    "valor": -1200.50,
+    "tipo": "Despesa",
+    "categoria": "Serviços",
+    "natureza": "Empresarial"
+  }}
+]
 
 Extrato:
 {texto}
 """
+
+        with st.expander("🔎 Ver prompt enviado ao modelo"):
+            st.text_area("Prompt:", prompt, height=300)
+
         with st.spinner("Processando com Llama 3.1 (Hugging Face)…"):
             resposta = chamar_llama3_huggingface(prompt)
+
+        if resposta:
+            import re
+            match = re.search(r"\[.*\]", resposta, re.DOTALL)
+            if match:
+                resposta = match.group(0)
 
         if not resposta:
             st.error("Não houve resposta do modelo.")
@@ -191,5 +215,3 @@ Extrato:
                 )
             else:
                 st.error("Falha ao interpretar o JSON da resposta.")
-
-
