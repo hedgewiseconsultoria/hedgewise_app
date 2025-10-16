@@ -105,7 +105,8 @@ Movimentações extraídas:
 
     try:
         result = client.text_generation(
-            prompt=prompt,
+            prompt,
+            model="meta-llama/Llama-3.1-8B",
             max_new_tokens=2000,
             temperature=0.2,
         )
@@ -127,5 +128,6 @@ Movimentações extraídas:
     except Exception as e:
         st.warning("⚠️ Falha ao interpretar o JSON retornado.")
         st.text_area("Resposta completa da IA:", result, height=300)
+
 
 
