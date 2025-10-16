@@ -6,4 +6,3 @@ pdf2image
 pytesseract
 pillow
 openpyxl
-transformers
