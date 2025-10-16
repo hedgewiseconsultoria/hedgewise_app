@@ -96,20 +96,28 @@ def extrair_texto_pdf(pdf_bytes, usar_ocr=False):
                 if t:
                     texto += t + "\n"
     except Exception as e:
-        st.error(f"Erro ao ler PDF: {e}")
-        return ""
+        st.warning(f"⚠️ Não foi possível extrair texto com pdfplumber: {e}")
+        texto = ""
 
     texto = texto.strip()
 
     if usar_ocr and not texto:
         try:
+            st.info("Tentando OCR (pode demorar alguns segundos)...")
             imagens = convert_from_bytes(pdf_bytes)
+            ocr_texto = ""
             for img in imagens:
-                texto += pytesseract.image_to_string(img, lang="por") + "\n"
+                ocr_texto += pytesseract.image_to_string(img, lang="por") + "\n"
+            texto = ocr_texto.strip()
+            if not texto:
+                st.warning("OCR concluído, mas não foi detectado texto.")
         except Exception as e:
-            st.error(f"Erro no OCR: {e}")
+            st.error(f"Erro ao realizar OCR: {e}")
+            texto = ""
 
-    return texto.strip()
+    if not texto:
+        st.warning("❌ Nenhum texto encontrado no PDF. Verifique se o arquivo é legível.")
+    return texto
 
 def chamar_llama3_huggingface(prompt_text):
     try:
