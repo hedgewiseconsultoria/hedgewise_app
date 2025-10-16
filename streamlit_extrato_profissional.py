@@ -8,6 +8,7 @@ import base64
 from io import BytesIO
 from pdf2image import convert_from_bytes
 import pytesseract
+from huggingface_hub import InferenceClient
 
 # ==============================
 # CONFIGURAÇÃO DA PÁGINA
@@ -90,9 +91,15 @@ st.markdown("Envie seu extrato em PDF para análise automática e categorizaçã
 # ==============================
 # TOKEN E ENDPOINT
 # ==============================
-HF_TOKEN = os.getenv("HF_TOKEN")
-API_URL = "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct"
-HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
+client = InferenceClient(
+    provider="featherless-ai",
+    api_key=os.environ["HF_TOKEN"],
+)
+
+result = client.text_generation(
+    "Can you please let us know more details about your ",
+    model="meta-llama/Llama-3.1-8B",
+)
 
 
 # fallback – modelo alternativo leve
@@ -202,6 +209,7 @@ Extrato:
                 )
             else:
                 st.error("Falha ao interpretar o JSON retornado pelo modelo.")
+
 
 
 
