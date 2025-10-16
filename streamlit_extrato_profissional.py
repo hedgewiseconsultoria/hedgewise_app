@@ -15,26 +15,29 @@ st.set_page_config(page_title="Hedgewise - Extrato Profissional", layout="wide")
 st.title("💼 Análise de Extrato Bancário com Llama 3.1")
 
 # ---------------------------------------------
-# Configuração do Hugging Face / Llama 3.1
+# Configuração da IA (Hugging Face via Featherless AI)
 # ---------------------------------------------
+HF_TOKEN = os.getenv("HF_TOKEN")
 
-client = InferenceClient(
-    provider="featherless-ai",
-    api_key=os.environ["HF_TOKEN"],
-)
+if not HF_TOKEN:
+    st.error("⚠️ O token da Hugging Face (HF_TOKEN) não foi configurado no ambiente.")
+    st.stop()
 
-result = client.text_generation(
-    "Can you please let us know more details about your ",
-    model="meta-llama/Llama-3.1-8B",
-)
+try:
+    client = InferenceClient(
+        provider="featherless-ai",
+        api_key=HF_TOKEN,
+    )
+except Exception as e:
+    st.error(f"Erro ao inicializar o cliente da Hugging Face: {e}")
+    st.stop()
+
 def chamar_llama3_huggingface(prompt_text):
-    """
-    Envia o prompt para o modelo Llama 3.1 via Hugging Face Inference API.
-    Retorna o texto gerado pela IA.
-    """
+    """Envia o prompt para o modelo Llama 3.1 (via Featherless AI)"""
     try:
         result = client.text_generation(
             prompt_text,
+            model="meta-llama/Llama-3.1-8B",
             max_new_tokens=2000,
             temperature=0.2,
         )
@@ -100,7 +103,7 @@ Extrato bancário:
         st.text_area("Prompt:", prompt, height=300)
 
     # -------------------------------------------------
-    # Envio ao modelo Llama 3.1 (Hugging Face Inference)
+    # Envio ao modelo Llama 3.1 (Featherless AI via Hugging Face)
     # -------------------------------------------------
     st.info("Analisando o extrato com IA (Llama 3.1)…")
 
@@ -117,7 +120,6 @@ Extrato bancário:
         json_text = result[json_inicio:json_fim]
         dados = json.loads(json_text)
         st.json(dados)
-    except Exception as e:
+    except Exception:
         st.warning("Falha ao interpretar o JSON da resposta.")
         st.text_area("Resposta completa da IA:", result, height=300)
-
