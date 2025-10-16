@@ -1,4 +1,10 @@
 streamlit==1.39.0
+pandas==2.2.3
+numpy==2.1.2
+pdfplumber==0.11.3
+pytesseract==0.3.13
+pdf2image==1.17.0
+Pillow==10.4.0
+openai==1.50.2
 huggingface_hub==0.25.2
-protobuf==5.28.2
-requests==2.32.3
+python-dotenv==1.0.1
