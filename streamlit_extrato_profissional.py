@@ -17,18 +17,16 @@ st.title("💼 Análise de Extrato Bancário com Llama 3.1")
 # ---------------------------------------------
 # Configuração do Hugging Face / Llama 3.1
 # ---------------------------------------------
-HF_TOKEN = os.getenv("HF_TOKEN")
 
-if not HF_TOKEN:
-    st.error("⚠️ O token da Hugging Face (HF_TOKEN) não foi configurado no ambiente.")
-    st.stop()
-
-# Inicializa o cliente Hugging Face
 client = InferenceClient(
-    model="meta-llama/Llama-3.1-8B",
-    token=HF_TOKEN,
+    provider="featherless-ai",
+    api_key=os.environ["HF_TOKEN"],
 )
 
+result = client.text_generation(
+    "Can you please let us know more details about your ",
+    model="meta-llama/Llama-3.1-8B",
+)
 def chamar_llama3_huggingface(prompt_text):
     """
     Envia o prompt para o modelo Llama 3.1 via Hugging Face Inference API.
@@ -122,3 +120,4 @@ Extrato bancário:
     except Exception as e:
         st.warning("Falha ao interpretar o JSON da resposta.")
         st.text_area("Resposta completa da IA:", result, height=300)
+
