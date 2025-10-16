@@ -6,147 +6,181 @@ import json
 import os
 import base64
 from io import BytesIO
-from pdf2image import convert_from_path
+from pdf2image import convert_from_bytes
 import pytesseract
 
-# --- Configuração da página ---
+# ==============================
+# CONFIGURAÇÃO DA PÁGINA
+# ==============================
 st.set_page_config(
     page_title="Hedgewise • Extrato Inteligente",
-    page_icon="💼",
-    layout="wide"
+    layout="wide",
+    page_icon=None
 )
 
-# --- Estilo profissional (baseado na logo) ---
+# ==============================
+# ESTILO PERSONALIZADO
+# ==============================
 st.markdown("""
     <style>
-    body {
-        background-color: #f6f8fa;
-        color: #111827;
+    /* Corpo */
+    html, body, [class*="st-"] {
         font-family: 'Inter', sans-serif;
+        background-color: #F7F8FA;
+        color: #111827;
     }
+
+    /* Container principal */
     .block-container {
         padding-top: 2rem;
         padding-left: 3rem;
         padding-right: 3rem;
     }
-    h1, h2, h3, h4 {
+
+    /* Títulos */
+    h1, h2, h3 {
         color: #0A2342 !important;
-        letter-spacing: -0.5px;
+        letter-spacing: -0.3px;
+        font-weight: 600 !important;
     }
+
+    /* Botões */
     .stButton>button {
         background-color: #004AAD;
-        color: white;
+        color: #FFFFFF;
+        border: none;
         border-radius: 8px;
         font-weight: 600;
-        padding: 0.6rem 1.2rem;
-        border: none;
-        transition: 0.3s;
+        padding: 0.6rem 1.4rem;
+        transition: background-color 0.3s ease, transform 0.2s ease;
     }
     .stButton>button:hover {
         background-color: #003580;
         transform: translateY(-1px);
     }
-    .metric-label {
-        color: #374151 !important;
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #FFFFFF;
+        border-right: 1px solid #E5E7EB;
     }
+
+    /* Card */
     .card {
-        background-color: white;
+        background-color: #FFFFFF;
         border-radius: 12px;
-        padding: 1rem 1.5rem;
-        box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+        padding: 1.5rem;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
         margin-top: 1rem;
+    }
+
+    /* Métricas */
+    [data-testid="stMetricValue"] {
+        color: #004AAD !important;
+        font-weight: 700 !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# --- Sidebar ---
+# ==============================
+# SIDEBAR
+# ==============================
 with st.sidebar:
     st.image("logo_hedgewise.png", width=180)
     st.markdown("### Hedgewise")
     st.caption("Risco Controlado • Inteligência Financeira")
     st.markdown("---")
-    use_ocr = st.checkbox("Ativar OCR (PDF escaneado)", value=False)
-    st.markdown("Versão MVP • Llama 3 via Hugging Face")
+    use_ocr = st.checkbox("Ativar OCR (para PDFs escaneados)", value=False)
+    st.markdown("---")
+    st.markdown("<small>Versão MVP • Llama 3 via Hugging Face</small>", unsafe_allow_html=True)
 
-# --- Cabeçalho ---
-st.title("📊 Leitor de Extratos Inteligente")
-st.write("Envie um extrato bancário em PDF e deixe o Llama 3 classificar automaticamente as movimentações.")
+# ==============================
+# CABEÇALHO
+# ==============================
+st.title("Leitor Inteligente de Extratos Bancários")
+st.markdown("Envie seu extrato em PDF para análise automática e categorização financeira baseada em IA.")
 
-# --- Upload do PDF ---
-uploaded_file = st.file_uploader("Selecione o arquivo PDF", type=["pdf"])
-
-# --- Token e endpoint do Hugging Face ---
+# ==============================
+# TOKEN E ENDPOINT
+# ==============================
 HF_TOKEN = os.getenv("HF_TOKEN")
 API_URL = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct"
 HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
-# --- Funções auxiliares ---
-
+# ==============================
+# FUNÇÕES AUXILIARES
+# ==============================
 def extrair_texto_pdf(pdf_bytes, usar_ocr=False):
+    """Extrai texto de um PDF; usa OCR se necessário."""
     texto = ""
-    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
-        for pagina in pdf.pages:
-            t = pagina.extract_text()
-            if t:
-                texto += t + "\n"
-    texto = texto.strip()
+    try:
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            for pagina in pdf.pages:
+                t = pagina.extract_text()
+                if t:
+                    texto += t + "\n"
+    except Exception as e:
+        st.warning(f"Erro ao ler PDF com pdfplumber: {e}")
 
+    texto = texto.strip()
     if usar_ocr and not texto:
-        imagens = convert_from_path(BytesIO(pdf_bytes))
+        imagens = convert_from_bytes(pdf_bytes)
         for img in imagens:
             texto += pytesseract.image_to_string(img, lang="por") + "\n"
 
     return texto.strip()
 
-def chamar_llama3_huggingface(prompt_text):
-    payload = {
-        "inputs": prompt_text,
-        "parameters": {"max_new_tokens": 1000, "temperature": 0.0}
-    }
+def chamar_llama3(prompt_text):
+    """Chama o modelo Llama 3 via API do Hugging Face."""
+    payload = {"inputs": prompt_text, "parameters": {"max_new_tokens": 1000, "temperature": 0.0}}
     try:
-        response = requests.post(API_URL, headers=HEADERS, json=payload, timeout=120)
-        response.raise_for_status()
-        data = response.json()
-        # a resposta pode vir em formato de lista ou dict
+        resp = requests.post(API_URL, headers=HEADERS, json=payload, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
         if isinstance(data, list):
             return data[0].get("generated_text", "")
         return data.get("generated_text", "")
     except Exception as e:
-        st.error(f"Erro na API Hugging Face: {e}")
+        st.error(f"Erro na comunicação com o Hugging Face: {e}")
         return ""
 
 def parse_json_resposta(texto_json):
+    """Converte a resposta JSON do modelo em DataFrame."""
     try:
         arr = json.loads(texto_json)
         return pd.DataFrame(arr)
     except Exception:
         return None
 
-# --- Processamento principal ---
+# ==============================
+# UPLOAD E PROCESSAMENTO
+# ==============================
+uploaded_file = st.file_uploader("Selecione o extrato bancário (PDF)", type=["pdf"])
+
 if uploaded_file:
     bytes_pdf = uploaded_file.read()
-    st.info("Extraindo texto do PDF…")
-    texto = extrair_texto_pdf(bytes_pdf, use_ocr=use_ocr)
+    st.info("Extraindo texto do PDF...")
+    texto = extrair_texto_pdf(bytes_pdf, usar_ocr=use_ocr)
 
     if not texto:
         st.warning("Não foi possível extrair texto. Tente ativar OCR.")
     else:
         st.success("Texto extraído com sucesso.")
         prompt = f"""
-Você é um assistente financeiro da Hedgewise.
-Analise o extrato abaixo e devolva **somente** um JSON estruturado com as chaves:
+Você é um analista financeiro da Hedgewise.
+Analise o extrato abaixo e devolva SOMENTE um JSON válido com os campos:
 data, descricao, valor, tipo (Receita ou Despesa), categoria, natureza (Pessoal ou Empresarial).
 
 Extrato:
 {texto}
 """
-        with st.spinner("Processando com Llama 3 (Hugging Face)…"):
-            resposta = chamar_llama3_huggingface(prompt)
+        with st.spinner("Processando dados com o Llama 3..."):
+            resposta = chamar_llama3(prompt)
 
         if not resposta:
             st.error("Não houve resposta do modelo.")
         else:
-            st.subheader("JSON retornado pela IA")
+            st.subheader("Resposta da IA (JSON)")
             st.code(resposta, language="json")
 
             df = parse_json_resposta(resposta)
@@ -163,12 +197,11 @@ Extrato:
                 st.markdown("</div>", unsafe_allow_html=True)
 
                 csv = df.to_csv(index=False).encode("utf-8")
-                b64 = base64.b64encode(csv).decode()
                 st.download_button(
-                    label="📥 Baixar resultado em CSV",
+                    label="Baixar resultado em CSV",
                     data=csv,
                     file_name="resultado_hedgewise.csv",
                     mime="text/csv"
                 )
             else:
-                st.error("Falha ao interpretar o JSON da resposta.")
+                st.error("Falha ao interpretar o JSON retornado pelo modelo.")
