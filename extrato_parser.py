@@ -1,14 +1,13 @@
 # ===========================================================
 # Script definitivo de processamento de extratos bancários
 # Adaptado para uso em produção com Streamlit
-# Bancos: BB, Itaú, Bradesco, Santander, Caixa, XP, Sicoob,
-# BNB, Nubank, Inter, Safra + fallback genérico
+# Estratégia: Universal (Executa todos e escolhe o melhor resultado)
 # ===========================================================
 
 import re
 import pandas as pd
 import pdfplumber
-import io  # Importante: para lidar com arquivos em memória
+import io
 
 # ==================== FUNÇÕES UTILITÁRIAS ====================
 
@@ -54,6 +53,7 @@ def clean_value_str(s: str):
     """Limpa string monetária brasileira e retorna string numérica."""
     if not s: return None
     s = str(s).strip().replace("R$", "").replace("\u00A0", "").replace(" ", "").replace("-", "").replace(".", "").replace(",", ".")
+    # Verifica se o resultado é um número válido (inteiro ou float com até 2 casas decimais)
     return s if re.match(r"^\d+(\.\d{1,2})?$", s) else None
 
 
@@ -64,21 +64,30 @@ def normalizar_transacoes(transacoes):
 
     df["Valor_raw"] = df["Valor"].astype(str).apply(clean_value_str)
     df = df.dropna(subset=["Valor_raw"]).copy()
-    df["Valor"] = df["Valor_raw"].astype(float)
+    
+    # Tentativa de conversão para float
+    try:
+        df["Valor"] = df["Valor_raw"].astype(float)
+    except ValueError:
+        return pd.DataFrame() # Retorna vazio se a conversão falhar
+
     df["Tipo"] = df["Tipo"].astype(str).str.upper().map(lambda x: "D" if x.startswith("D") else "C")
     
     # Adiciona coluna de data em formato datetime para ordenação e remove inválidas
     df['Data_dt'] = pd.to_datetime(df['Data'], format='%d/%m/%Y', errors='coerce')
     df = df.dropna(subset=['Data_dt'])
+    
     if df.empty: return pd.DataFrame(columns=["Data", "Histórico", "Valor", "Tipo"])
     
     # Ordena por data e remove a coluna auxiliar
-    df = df.sort_values(by='Data_dt').drop(columns=['Data_dt']).reset_index(drop=True)
+    df = df.sort_values(by='Data_dt').reset_index(drop=True)
     
+    # Mantém 'Data_dt' para a função de avaliação antes de remover
     return df.drop(columns=["Valor_raw"], errors='ignore')
 
 
 # ==================== PROCESSADORES POR BANCO ====================
+# (Mantidos inalterados, pois representam as 'tentativas' de extração)
 
 def processar_extrato_bb(texto: str):
     """Banco do Brasil"""
@@ -407,64 +416,132 @@ def processar_extrato_generico(texto: str):
     return trans
 
 
-# ==================== DETECTOR DE BANCO ====================
-
-def detectar_banco(texto: str):
-    """Detecta automaticamente o banco pelo conteúdo do PDF"""
-    tu = texto.upper()
-    if "NUBANK" in tu or "NU PAGAMENTOS" in tu: return "NUBANK"
-    if "BANCO DO BRASIL" in tu: return "BANCO DO BRASIL"
-    if "ITAÚ" in tu or "ITAU" in tu: return "ITAU"
-    if "BRADESCO" in tu: return "BRADESCO"
-    if "SANTANDER" in tu: return "SANTANDER"
-    if "CAIXA" in tu or "CAIXA ECONÔMICA" in tu: return "CAIXA"
-    if "XP" in tu and "INVESTIMENTOS" in tu: return "XP INVESTIMENTOS"
-    if "SICOOB" in tu: return "SICOOB"
-    if "NORDESTE" in tu or "BNB" in tu: return "BANCO DO NORDESTE"
-    if "INTER" in tu and "BANCO" in tu: return "INTER"
-    if "SAFRA" in tu or "BANCO SAFRA" in tu: return "SAFRA"
-    return "DESCONHECIDO"
-
-
 # ==================== MAPEAMENTO DE PROCESSADORES ====================
 
+# Dicionário usado para ITERAR sobre todas as opções de processamento.
 PROCESSADORES = {
-    "BANCO DO BRASIL": processar_extrato_bb,
+    "BB": processar_extrato_bb,
     "ITAU": processar_extrato_itau,
     "BRADESCO": processar_extrato_bradesco,
     "SANTANDER": processar_extrato_santander,
     "CAIXA": processar_extrato_caixa,
-    "XP INVESTIMENTOS": processar_extrato_xp,
+    "XP": processar_extrato_xp,
     "SICOOB": processar_extrato_sicoob,
-    "BANCO DO NORDESTE": processar_extrato_bnb,
+    "BNB": processar_extrato_bnb,
     "NUBANK": processar_extrato_nubank,
     "INTER": processar_extrato_inter,
     "SAFRA": processar_extrato_safra,
-    "DESCONHECIDO": processar_extrato_generico
+    "GENERICO": processar_extrato_generico
 }
 
 
-# ==================== EXTRAÇÃO DE TEXTO (MODIFICADA) ====================
+# ==================== EXTRAÇÃO E AVALIAÇÃO (NOVA LÓGICA MESTRA) ====================
 
 def extrair_texto_pdf(pdf_file: io.BytesIO) -> str:
-    """
-    Extrai texto de um objeto de arquivo PDF em memória (vindo do Streamlit).
-    """
+    """Extrai texto de um objeto de arquivo PDF em memória (vindo do Streamlit)."""
     texto = ""
     try:
         with pdfplumber.open(pdf_file) as pdf:
             for page in pdf.pages:
+                # Usar x_tolerance e y_tolerance ajuda a manter linhas juntas
                 t = page.extract_text(x_tolerance=2, y_tolerance=2)
                 if t:
                     texto += t + "\n"
     except Exception as e:
-        # Lança uma exceção que pode ser capturada pela interface do Streamlit
-        # para mostrar uma mensagem de erro amigável ao usuário.
-        raise ValueError(f"Não foi possível processar o arquivo PDF. Pode estar corrompido, protegido por senha ou em um formato não suportado. Erro técnico: {e}")
+        raise ValueError(f"Não foi possível processar o arquivo PDF. Erro: {e}")
         
     if not texto.strip():
         raise ValueError("O PDF parece estar vazio ou contém apenas imagens. Nenhum texto foi extraído.")
         
     return texto
+
+def avaliar_resultado(df: pd.DataFrame) -> float:
+    """
+    Atribui uma 'nota' (score) a um DataFrame de transações para
+    selecionar o melhor resultado.
+    """
+    if df.empty:
+        return 0.0
+
+    score = 0.0
+    num_linhas = len(df)
+    
+    # Peso 1: Quantidade de linhas (o mais importante)
+    score += num_linhas * 10 
+    
+    # Peso 2: Diversidade de datas (evita extrair a mesma transação repetidamente)
+    if 'Data_dt' in df.columns and num_linhas > 0:
+        dias_cobertos = (df['Data_dt'].max() - df['Data_dt'].min()).days + 1
+        score += dias_cobertos * 5
+        
+    # Peso 3: Variância dos valores (em R$) - Extratos reais têm valores variados
+    if num_linhas > 1 and df['Valor'].dtype in ['float64', 'float32']:
+        # O fator 3e-6 é um ajuste para que a variância não domine o score
+        score += df['Valor'].var() * 3e-6 
+    
+    # Peso 4: Proporção de Débitos/Créditos (balanceamento)
+    tipo_counts = df['Tipo'].value_counts(normalize=True)
+    prop_D = tipo_counts.get('D', 0)
+    prop_C = tipo_counts.get('C', 0)
+    # Penaliza resultados muito desequilibrados (ex: 100% Débito)
+    balance_score = 1 - abs(prop_D - prop_C)
+    score += balance_score * 50
+
+    return score
+
+
+def processar_extrato_universal(pdf_file: io.BytesIO) -> pd.DataFrame:
+    """
+    Tenta TODOS os processadores no texto do PDF e retorna o melhor resultado.
+    """
+    # 1. Extrair texto de forma robusta
+    texto = extrair_texto_pdf(pdf_file)
+    
+    melhor_df = pd.DataFrame()
+    melhor_score = -1.0
+    melhor_processador = "NENHUM"
+    
+    # 2. Executar e avaliar cada processador
+    for nome_banco, processador in PROCESSADORES.items():
+        try:
+            # 2.1. Extrair transações usando o modelo (pode levantar exceções)
+            transacoes_raw = processador(texto)
+            
+            # 2.2. Normalizar e limpar o resultado
+            df_atual = normalizar_transacoes(transacoes_raw)
+            
+            # 2.3. Avaliar a qualidade do resultado
+            score_atual = avaliar_resultado(df_atual)
+            
+            # 2.4. Comparar e selecionar o melhor
+            if score_atual > melhor_score:
+                melhor_score = score_atual
+                # Copiar para evitar que a próxima iteração altere o dataframe
+                # (embora improvável, é uma prática segura)
+                melhor_df = df_atual.copy() 
+                melhor_processador = nome_banco
+                
+            # print(f"DEBUG: {nome_banco} - Transações: {len(df_atual)} - Score: {score_atual:.2f}") # Log de debug
+            
+        except Exception as e:
+            # print(f"AVISO: Processador {nome_banco} falhou: {e}") # Log de debug
+            continue
+
+    if not melhor_df.empty and 'Data_dt' in melhor_df.columns:
+        # Remover a coluna auxiliar de data do resultado final
+        melhor_df = melhor_df.drop(columns=['Data_dt'])
+
+    print(f"SUCESSO: Melhor resultado encontrado por: {melhor_processador} (Score: {melhor_score:.2f}, Transações: {len(melhor_df)})")
+    
+    return melhor_df
+
+
+# ==================== FUNÇÃO PRINCIPAL DE EXECUÇÃO ====================
+
+def processar_extrato_principal(pdf_file: io.BytesIO) -> pd.DataFrame:
+    """
+    Função principal que a aplicação (ex: Streamlit) deve chamar.
+    """
+    return processar_extrato_universal(pdf_file)
 
 # NENHUM CÓDIGO DEVE VIR DEPOIS DESTA LINHA.
