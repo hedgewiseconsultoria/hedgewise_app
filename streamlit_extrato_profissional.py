@@ -7,23 +7,19 @@ from google.genai import types
 from io import BytesIO
 
 # IMPORTAÇÕES ESSENCIAIS DO SEU CÓDIGO ORIGINAL
-# Você deve garantir que 'extrato_parser.py' está disponível e contém:
-# - extrair_texto_pdf
-# - detectar_banco
-# - PROCESSADORES (dicionário de funções de processamento)
-# - normalizar_transacoes
+# Garanta que extrato_parser.py e suas funções estão disponíveis
 from extrato_parser import extrair_texto_pdf, detectar_banco, PROCESSADORES, normalizar_transacoes 
 
 # -------------------------------------------------
 # Configuração do Streamlit
 # -------------------------------------------------
 st.set_page_config(page_title="Hedgewise - Extrato Profissional", layout="wide")
-st.title("💼 Análise de Extrato Bancário com Google Gemini")
+st.title("💼 Análise de Extrato Bancário com Google Gemini (DFK/CPC 03)")
 
 uploaded_file = st.file_uploader("📎 Envie o extrato bancário em PDF", type=["pdf"])
 
 # -------------------------------------------------
-# 1. Extração de texto e estruturação
+# Lógica de processamento (Início)
 # -------------------------------------------------
 if uploaded_file:
     st.info("Extraindo texto do PDF...")
@@ -44,24 +40,16 @@ if uploaded_file:
     with st.expander("📄 Texto extraído do PDF"):
         st.text_area("Conteúdo do extrato:", texto, height=300)
     
-    # -------------------------------------------------
-    # 2. CONFIRMAÇÃO DO BANCO (Novo Passo)
-    # -------------------------------------------------
-    
-    # Detectar banco automaticamente
+    # CONFIRMAÇÃO DO BANCO
     banco_detectado = detectar_banco(texto)
-    
     bancos_disponiveis = list(PROCESSADORES.keys())
-    
-    # Tenta pré-selecionar o banco detectado
     try:
         index_selecionado = bancos_disponiveis.index(banco_detectado)
     except ValueError:
-        index_selecionado = 0 # Seleciona o primeiro da lista se o detectado não existir
+        index_selecionado = 0 
 
     st.success(f"🏦 Banco detectado automaticamente: {banco_detectado}")
 
-    # Permite ao usuário confirmar ou ajustar
     banco_confirmado = st.selectbox(
         "**Confirme ou ajuste o banco para o processamento das transações:**",
         options=bancos_disponiveis,
@@ -72,7 +60,6 @@ if uploaded_file:
     if not st.button(f"Processar Transações ({banco_confirmado})"):
         st.stop()
         
-    # Processar transações com o parser correto (baseado na confirmação)
     processador = PROCESSADORES.get(banco_confirmado, PROCESSADORES["DESCONHECIDO"])
     transacoes = processador(texto)
     
@@ -87,20 +74,19 @@ if uploaded_file:
         st.stop()
         
     if 'Tipo' not in df_transacoes.columns:
-        st.error("A coluna 'Tipo' (Despesa/Receita) não foi gerada na normalização. O processamento da IA não funcionará corretamente.")
+        st.error("A coluna 'Tipo' (D/C) não foi gerada na normalização. O processamento da IA não funcionará corretamente.")
         st.stop()
 
     st.subheader(f"Transações Extraídas ({len(df_transacoes)})")
     st.dataframe(df_transacoes, use_container_width=True)
 
     # -------------------------------------------------
-    # 3. CONFIGURAÇÕES DE LOTE E ESTRUTURA PARA GEMINI
+    # 3. CONFIGURAÇÕES DE LOTE E ESTRUTURA PARA GEMINI (CPC 03)
     # -------------------------------------------------
     
-    # Ajuste o tamanho do lote para otimizar a velocidade vs. número de chamadas.
     TAMANHO_DO_LOTE = 50 
     
-    # Estrutura JSON esperada pelo modelo
+    # JSON SCHEMA ATUALIZADO com as novas colunas
     json_schema = {
         "type": "array",
         "items": {
@@ -109,25 +95,24 @@ if uploaded_file:
                 "data": {"type": "string", "description": "A data da transação."},
                 "historico": {"type": "string", "description": "O histórico ou descrição original da transação."},
                 "valor": {"type": "string", "description": "O valor original da transação."},
-                "tipo": {"type": "string", "description": "Se é 'Despesa' ou 'Receita'."},
-                "categoria": {"type": "string", "description": "Uma classificação detalhada da transação."},
-                "natureza": {"type": "string", "description": "Classificação 'Pessoal' ou 'Empresarial'."}
+                "tipo": {"type": "string", "description": "O tipo original da transação ('D' para débito, 'C' para crédito)."},
+                "natureza_geral": {"type": "string", "description": "Classificação PRINCIPAL em 'Despesa' ou 'Receita'."}, # Nova Coluna
+                "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento', 'Financiamento' ou 'Pessoal'."}, # Nova Coluna
+                "natureza_analitica": {"type": "string", "description": "Classificação detalhada e linear da transação (Ex: 'Salário', 'Aluguel', 'Fornecedores')."}, # Categoria anterior
+                "natureza_juridica": {"type": "string", "description": "Classificação 'Pessoal' ou 'Empresarial'."} # Natureza anterior
             },
-            "required": ["data", "historico", "valor", "tipo", "categoria", "natureza"]
+            "required": ["data", "historico", "valor", "tipo", "natureza_geral", "subgrupo", "natureza_analitica", "natureza_juridica"]
         }
     }
     
-    # Variável para armazenar todos os resultados JSON de todos os lotes
     dados_classificados_totais = []
-
-    # Obter a chave API e inicializar o cliente
     API_KEY = os.getenv("GEMINI_API_KEY")
 
     if not API_KEY:
         st.error("Chave da API do Gemini (GEMINI_API_KEY) não configurada.")
         st.stop()
         
-    st.info(f"Analisando o extrato com IA (Gemini 2.5 Flash) em {len(df_transacoes) // TAMANHO_DO_LOTE + 1} lotes...")
+    st.info(f"Analisando o extrato em {len(df_transacoes) // TAMANHO_DO_LOTE + 1} lotes com taxonomia CPC 03...")
 
     try:
         client = genai.Client(api_key=API_KEY)
@@ -137,11 +122,9 @@ if uploaded_file:
             response_mime_type="application/json",
             response_schema=json_schema,
             temperature=0.1, 
-            # OTIMIZAÇÃO ADICIONAL: Desativa o raciocínio para classificação direta
             thinking_config=types.ThinkingConfig(thinking_budget=0) 
         )
 
-        # Lógica para processamento em lotes (Chunking)
         n_batches = len(df_transacoes) // TAMANHO_DO_LOTE + (1 if len(df_transacoes) % TAMANHO_DO_LOTE > 0 else 0)
         progress_bar = st.progress(0, text="Iniciando o processamento dos lotes...")
         
@@ -150,22 +133,33 @@ if uploaded_file:
             end_index = start_index + TAMANHO_DO_LOTE
             lote_df = df_transacoes.iloc[start_index:end_index]
             
-            # Preparar texto para o lote atual
+            # Prepara o texto para o lote atual
+            # NOTA: O campo 'Tipo' aqui ainda é 'D' ou 'C' do extrato original.
             texto_formatado_lote = "\n".join(
-                f"{row.Data} | {row['Histórico']} | {row['Valor']} | {row['Tipo']}"
+                f"{row.Data} | {row['Histórico']} | {row['Valor']} | Tipo: {row['Tipo']}"
                 for _, row in lote_df.iterrows()
             )
 
-            # Prompt de análise para o lote
+            # -------------------------------------------------
+            # NOVO PROMPT ALTAMENTE ESTRUTURADO PARA CLASSIFICAÇÃO DFC/CPC 03
+            # -------------------------------------------------
             prompt_lote = f"""
-Você é um analista financeiro da Hedgewise. Sua função é classificar as transações bancárias.
+Você é um analista financeiro sênior da Hedgewise, especializado na composição da Demonstração de Fluxo de Caixa (DFC) conforme o CPC 03 (IAS 7).
 
-Analise AS {len(lote_df)} MOVIMENTAÇÕES BANCÁRIAS abaixo e retorne um JSON estruturado.
+Sua tarefa é analisar AS {len(lote_df)} MOVIMENTAÇÕES BANCÁRIAS extraídas e retornar um JSON estritamente conforme o schema fornecido.
 
-Instruções:
-1. 'data', 'historico', 'valor', 'tipo' devem conter os valores EXATOS da movimentação.
-2. 'categoria' deve ser uma classificação detalhada e específica.
-3. 'natureza' deve ser 'Pessoal' ou 'Empresarial'.
+**Instruções de Classificação (Obrigatórias):**
+
+1.  **natureza_geral** (Grupo): Classifique estritamente como **"Receita"** ou **"Despesa"**. (Observar se o Tipo original é 'C'rédito ou 'D'ébito, mas sempre priorizar o significado da transação).
+2.  **subgrupo** (DFC/CPC 03): Classifique estritamente em uma das quatro opções:
+    * **"Operacional"**: Transações que afetam o resultado e o capital de giro (vendas, compras, salários, aluguéis, impostos, fornecedores, etc.).
+    * **"Investimento"**: Aquisição ou venda de ativos não circulantes (imóveis, máquinas, participações societárias).
+    * **"Financiamento"**: Transações com capital de terceiros ou próprio (empréstimos, integralização/distribuição de capital, dividendos).
+    * **"Pessoal"**: Despesas pessoais do sócio/empreendedor pagas pela conta da empresa (retiradas, despesas particulares, etc.).
+3.  **natureza_analitica** (Subgrupo Detalhado):
+    * Identifique o destino/origem de forma detalhada e linear.
+    * **REGRA DE PREENCHIMENTO:** Se o histórico for genérico (ex: "Pagamento de Boleto", "Transferência TED", "Pix") e não houver informação clara, assuma **"Fornecedores"** ou **"Despesas Gerais Operacionais"** se for um débito, e **"Vendas/Serviços"** se for um crédito, pois a premissa é que a conta é empresarial.
+4.  **natureza_juridica**: Classifique estritamente como **"Empresarial"** ou **"Pessoal"**.
 
 Responda APENAS com o JSON.
 
@@ -176,6 +170,7 @@ Movimentações extraídas:
             # Atualiza o progresso e envia o lote
             progress_bar.progress((i + 1) / n_batches, text=f"Processando lote {i+1} de {n_batches} ({len(lote_df)} transações)...")
             
+            # Chamada à API
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=prompt_lote,
@@ -190,12 +185,12 @@ Movimentações extraídas:
                 if isinstance(dados_lote, list):
                     dados_classificados_totais.extend(dados_lote)
                 else:
-                    st.warning(f"Lote {i+1}: Retorno JSON inesperado (não é uma lista). O resultado deste lote foi ignorado.")
+                    st.warning(f"Lote {i+1}: Retorno JSON inesperado. O resultado deste lote foi ignorado.")
             except json.JSONDecodeError as e:
-                st.error(f"Lote {i+1} falhou ao decodificar JSON. O extrato deste lote pode ter sido corrompido.")
+                st.error(f"Lote {i+1} falhou ao decodificar JSON. Certifique-se de que o modelo produziu um JSON válido.")
                 st.text_area(f"Resposta bruta do Lote {i+1}:", resposta_texto, height=150)
         
-        progress_bar.empty() # Remove a barra de progresso após o término
+        progress_bar.empty()
         st.success("✅ Classificação de todas as movimentações concluída com sucesso!")
 
     except Exception as e:
@@ -205,15 +200,21 @@ Movimentações extraídas:
     # -------------------------------------------------
     # Exibir Resultado Final
     # -------------------------------------------------
-    st.subheader("📊 Resultado Final da IA (Extrato Classificado)")
+    st.subheader("📊 Resultado Final da IA (Extrato Classificado - DFK/CPC 03)")
 
     if dados_classificados_totais:
-        # Exibir JSON
         st.json(dados_classificados_totais)
 
-        # Exibir como DataFrame
         st.subheader("Tabela Classificada Completa")
         df_classificado = pd.DataFrame(dados_classificados_totais)
+        
+        # Reorganiza as colunas para melhor visualização
+        colunas_ordenadas = [
+            'data', 'historico', 'valor', 'tipo', 
+            'natureza_geral', 'subgrupo', 'natureza_analitica', 'natureza_juridica'
+        ]
+        df_classificado = df_classificado[colunas_ordenadas]
+        
         st.dataframe(df_classificado, use_container_width=True)
     else:
         st.warning("Nenhum dado classificado foi retornado. Verifique os erros acima.")
