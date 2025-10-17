@@ -14,7 +14,7 @@ from extrato_parser import extrair_texto_pdf, detectar_banco, PROCESSADORES, nor
 # Configuração do Streamlit
 # -------------------------------------------------
 st.set_page_config(page_title="Hedgewise - Extrato Profissional", layout="wide")
-st.title("💼 Análise de Extrato Bancário com Google Gemini (DFK/CPC 03)")
+st.title("💼 Análise de Extrato Bancário com Google Gemini")
 
 uploaded_file = st.file_uploader("📎 Envie o extrato bancário em PDF", type=["pdf"])
 
@@ -218,3 +218,4 @@ Movimentações extraídas:
         st.dataframe(df_classificado, use_container_width=True)
     else:
         st.warning("Nenhum dado classificado foi retornado. Verifique os erros acima.")
+
