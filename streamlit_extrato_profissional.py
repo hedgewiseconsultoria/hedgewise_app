@@ -1,20 +1,24 @@
 import os
 import json
 import streamlit as st
-from huggingface_hub import InferenceClient
+# Importar a biblioteca Google GenAI
+from google import genai
+from google.genai import types # Para configurar o Request
 from extrato_parser import extrair_texto_pdf, detectar_banco, PROCESSADORES, normalizar_transacoes
 from io import BytesIO
+import pandas as pd # Adicionado importação do pandas, caso não esteja no seu ambiente
 
 # -------------------------------------------------
 # Configuração do Streamlit
 # -------------------------------------------------
 st.set_page_config(page_title="Hedgewise - Extrato Profissional", layout="wide")
-st.title("💼 Análise de Extrato Bancário com Mistral 7B Instruct v0.3")
+# Atualizado o título para refletir o uso do Gemini
+st.title("💼 Análise de Extrato Bancário com Google Gemini")
 
 uploaded_file = st.file_uploader("📎 Envie o extrato bancário em PDF", type=["pdf"])
 
 # -------------------------------------------------
-# Etapa 1: Extração de texto e estruturação
+# Etapa 1: Extração de texto e estruturação (Mantida)
 # -------------------------------------------------
 if uploaded_file:
     st.info("Extraindo e estruturando informações do extrato bancário…")
@@ -51,8 +55,13 @@ if uploaded_file:
     st.dataframe(df_transacoes, use_container_width=True)
 
     # -------------------------------------------------
-    # Preparar texto limpo para o modelo Mistral
+    # Preparar texto limpo para o modelo Gemini
     # -------------------------------------------------
+    # Garantir que a coluna 'Tipo' existe no DataFrame após a normalização
+    if 'Tipo' not in df_transacoes.columns:
+         st.error("A coluna 'Tipo' (Despesa/Receita) não foi gerada na normalização. O processamento da IA não funcionará corretamente.")
+         st.stop()
+
     texto_formatado = "\n".join(
         f"{row.Data} | {row['Histórico']} | {row['Valor']} | {row['Tipo']}"
         for _, row in df_transacoes.iterrows()
@@ -61,18 +70,35 @@ if uploaded_file:
     # -------------------------------------------------
     # Prompt de análise
     # -------------------------------------------------
+    # Definindo um esquema (schema) de resposta JSON
+    # É uma boa prática para guiar o modelo Gemini na estruturação
+    json_schema = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "data": {"type": "string", "description": "A data da transação."},
+                "historico": {"type": "string", "description": "O histórico ou descrição original da transação."},
+                "valor": {"type": "string", "description": "O valor original da transação."},
+                "tipo": {"type": "string", "description": "Se é 'Despesa' ou 'Receita'."},
+                "categoria": {"type": "string", "description": "Uma classificação detalhada da transação (ex: 'Salário', 'Aluguel', 'Supermercado', 'Investimento')."},
+                "natureza": {"type": "string", "description": "Classificação 'Pessoal' ou 'Empresarial' baseada no histórico."}
+            },
+            "required": ["data", "historico", "valor", "tipo", "categoria", "natureza"]
+        }
+    }
+
     prompt = f"""
-Você é um analista financeiro da Hedgewise.
+Você é um analista financeiro da Hedgewise. Sua função é classificar as transações bancárias.
 
-Analise as movimentações bancárias abaixo e retorne um JSON estruturado com as colunas:
-- data
-- histórico
-- valor
-- tipo (despesa ou receita)
-- categoria (identificando do que se trata aquela movimentação)
-- natureza (Pessoal ou Empresarial)
+Analise as movimentações bancárias abaixo e retorne um JSON estruturado seguindo o schema fornecido.
 
-Responda apenas com o JSON.
+Instruções para o preenchimento:
+1. 'data', 'historico', 'valor', 'tipo' devem conter os valores EXATOS da movimentação.
+2. 'categoria' deve ser uma classificação detalhada.
+3. 'natureza' deve ser 'Pessoal' ou 'Empresarial'.
+
+Responda APENAS com o JSON.
 
 Movimentações extraídas:
 {texto_formatado}
@@ -82,46 +108,59 @@ Movimentações extraídas:
         st.text_area("Prompt:", prompt, height=300)
 
     # -------------------------------------------------
-    # Envio ao modelo Mistral 7B Instruct v0.3
+    # Envio ao modelo Google Gemini
     # -------------------------------------------------
-    st.info("Analisando o extrato com IA (Mistral 7B Instruct v0.3)…")
+    st.info("Analisando o extrato com IA (Google Gemini 2.5 Flash)…")
 
-    HF_TOKEN = os.getenv("HF_TOKEN")
+    # A chave da API do Gemini é lida automaticamente da variável de ambiente GEMINI_API_KEY
+    # No Streamlit Cloud, adicione a variável GEMINI_API_KEY nas Secrets
+    API_KEY = os.getenv("GEMINI_API_KEY")
 
-    if not HF_TOKEN:
-        st.error("Token do Hugging Face (HF_TOKEN) não configurado. Adicione nas Secrets do Streamlit.")
+    if not API_KEY:
+        st.error("Chave da API do Gemini (GEMINI_API_KEY) não configurada. Adicione nas Secrets do Streamlit.")
         st.stop()
 
     try:
-        client = InferenceClient(api_key=HF_TOKEN)
+        # Inicializa o cliente do Gemini
+        client = genai.Client(api_key=API_KEY)
 
-        result = client.chat_completion(
-            model="mistralai/Mistral-7B-Instruct-v0.3",
-            messages=[
-                {"role": "system", "content": "Você é um analista financeiro experiente da Hedgewise."},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=2000,
-            temperature=0.2,
+        # Configurações para a geração (força a saída JSON)
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=json_schema,
+            temperature=0.1, # Temperatura baixa para resultados determinísticos/precisos
         )
 
-        resposta_texto = result.choices[0].message["content"]
+        # Chama a API
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=config,
+        )
+
+        resposta_texto = response.text
 
     except Exception as e:
-        st.error(f"Erro ao conectar com a API da Hugging Face: {e}")
+        st.error(f"Erro ao conectar com a API do Google Gemini: {e}")
         st.stop()
 
     # -------------------------------------------------
-    # Exibir resultado e tentar converter para JSON
+    # Exibir resultado e converter para JSON (mais fácil agora)
     # -------------------------------------------------
-    st.subheader("📊 Resultado da IA")
+    st.subheader("📊 Resultado da IA (Classificação do Gemini)")
 
     try:
-        json_inicio = resposta_texto.find("[")
-        json_fim = resposta_texto.rfind("]") + 1
-        json_text = resposta_texto[json_inicio:json_fim]
-        dados = json.loads(json_text)
+        # A API do Gemini com response_mime_type="application/json" retorna
+        # um JSON puro, eliminando a necessidade de limpeza de string.
+        dados = json.loads(resposta_texto)
         st.json(dados)
+
+        # Exibir como DataFrame (opcional)
+        st.subheader("Tabela Classificada")
+        df_classificado = pd.DataFrame(dados)
+        st.dataframe(df_classificado, use_container_width=True)
+
+
     except Exception as e:
-        st.warning("⚠️ Falha ao interpretar o JSON. Veja a resposta completa abaixo:")
-        st.text_area("Resposta completa da IA:", resposta_texto, height=300)
+        st.warning(f"⚠️ Falha ao interpretar o JSON retornado: {e}")
+        st.text_area("Resposta completa da IA (não é um JSON válido):", resposta_texto, height=300)
