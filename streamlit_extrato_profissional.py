@@ -5,7 +5,82 @@ import pandas as pd
 from google import genai
 from google.genai import types
 from io import BytesIO
-from extrato_parser import extrair_texto_pdf, processar_extrato_principal
+from extrato_parser import extrair_texto_pdf, processar_extrato_principal # Certifique-se que extrato_parser.py está atualizado
+
+# ==================== FUNÇÕES DE CÁLCULO DFC ====================
+
+def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcula o DFC (Demonstração do Fluxo de Caixa) com base no CPC 03,
+    agrupando por Mês/Ano e Subgrupo.
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    df_calculo = df.copy()
+
+    # 1. Pré-processamento e Limpeza
+    # Converte 'data' para datetime e extrai Mês/Ano
+    try:
+        df_calculo['data'] = pd.to_datetime(df_calculo['data'], format='%d/%m/%Y', errors='coerce')
+        df_calculo.dropna(subset=['data'], inplace=True)
+        df_calculo['Mes_Ano'] = df_calculo['data'].dt.strftime('%Y-%m')
+        
+        # Converte 'valor' para float, tratando possíveis strings remanescentes (embora a normalização deva resolver)
+        df_calculo['valor'] = df_calculo['valor'].astype(str).str.replace('.', '').str.replace(',', '.', regex=False).astype(float)
+    except Exception as e:
+        st.error(f"Erro ao converter dados para cálculo do DFC: {e}")
+        return pd.DataFrame()
+
+    # 2. Determinar o sinal do Fluxo (Débito vs. Crédito, ajustado por natureza_geral)
+    # Receita (C) é positivo, Despesa (D) é negativo.
+    df_calculo['Fluxo'] = df_calculo.apply(
+        lambda row: row['valor'] if row['natureza_geral'].upper() == 'RECEITA' else -row['valor'], 
+        axis=1
+    )
+
+    # 3. Agrupamento e Soma
+    # O foco é no 'subgrupo' (Operacional, Investimento, Financiamento, Pessoal)
+    df_agrupado = df_calculo.groupby(['Mes_Ano', 'subgrupo'])['Fluxo'].sum().reset_index()
+    df_agrupado.rename(columns={'subgrupo': 'Atividade', 'Fluxo': 'Valor_Fluxo'}, inplace=True)
+    
+    # 4. Pivotagem para formato de relatório (Meses em colunas)
+    df_pivot = df_agrupado.pivot_table(
+        index='Atividade', 
+        columns='Mes_Ano', 
+        values='Valor_Fluxo', 
+        fill_value=0
+    )
+    
+    # 5. Adicionar Linhas de Totalização
+    total_por_mes = df_pivot.sum(axis=0)
+    
+    # Dicionário de reordenação de linhas
+    order = {
+        "Operacional": 1, 
+        "Investimento": 2, 
+        "Financiamento": 3, 
+        "Pessoal": 4
+    }
+    
+    # 6. Reestruturação Final
+    df_final = df_pivot.reset_index()
+    df_final['Ordem'] = df_final['Atividade'].map(order).fillna(5) # Pessoal é 4, outros (se houver) 5
+    df_final = df_final.sort_values(by='Ordem').drop(columns='Ordem')
+    
+    # Adiciona a linha de Geração de Caixa Total
+    df_total = pd.DataFrame(total_por_mes).T
+    df_total['Atividade'] = 'GERAÇÃO DE CAIXA TOTAL'
+    df_final = pd.concat([df_final, df_total], ignore_index=True)
+    
+    # Formatação (opcional, mas melhora a visualização)
+    colunas_mes = [col for col in df_final.columns if col != 'Atividade']
+    df_final[colunas_mes] = df_final[colunas_mes].applymap(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    
+    return df_final
+
+
+# ==================== CONFIGURAÇÃO DO STREAMLIT ====================
 
 # -------------------------------------------------
 # Configuração do Streamlit
@@ -13,12 +88,11 @@ from extrato_parser import extrair_texto_pdf, processar_extrato_principal
 st.set_page_config(page_title="Hedgewise - Extrato Profissional", layout="wide")
 st.title("Análise de Extrato Bancário com IA")
 
-# 1. Inicializa o session_state para armazenar o DF classificado
+# Inicializa o session_state para armazenar o DF classificado
 if 'df_classificado_final' not in st.session_state:
     st.session_state['df_classificado_final'] = pd.DataFrame()
 
 # Definição da configuração de colunas para o editor de dados
-# Isso cria os dropdowns de seleção
 COLUMN_CONFIG_EDITOR = {
     "subgrupo": st.column_config.SelectboxColumn(
         "Subgrupo (DFC/CPC 03)",
@@ -83,21 +157,18 @@ if uploaded_files:
 
         # LOOP SOBRE CADA ARQUIVO ENVIADO
         for i, uploaded_file in enumerate(uploaded_files):
-            # ... (Lógica de extração e classificação da IA, como antes) ...
-
             file_name = uploaded_file.name
             st.subheader(f"📂 Processando Arquivo {i+1} de {len(uploaded_files)}: {file_name}")
             
             pdf_bytes = uploaded_file.read()
             pdf_stream = BytesIO(pdf_bytes)
-
-            # --- PARTE 1: EXTRAÇÃO E NORMALIZAÇÃO (extrato_parser.py) ---
             
+            # --- EXTRAÇÃO E NORMALIZAÇÃO ---
             try:
                 pdf_stream.seek(0)
                 texto = extrair_texto_pdf(pdf_stream)
             except Exception as e:
-                st.error(f"Erro ao ler PDF de {file_name}: {e}. Pulando para o próximo.")
+                st.error(f"Erro ao ler PDF de {file_name}: {e}. Pulando.")
                 continue
 
             if not texto or len(texto.strip()) < 50:
@@ -107,7 +178,7 @@ if uploaded_files:
             with st.expander(f"📄 Texto extraído de {file_name}"):
                 st.text_area(f"Conteúdo do extrato {file_name}:", texto, height=200)
 
-            st.info("Iniciando processamento universal (Best-Effort) de transações...")
+            st.info("Iniciando processamento universal de transações...")
 
             pdf_stream.seek(0) 
             df_transacoes = processar_extrato_principal(pdf_stream)
@@ -119,12 +190,11 @@ if uploaded_files:
             st.success(f"Transações Extraídas de {file_name}: {len(df_transacoes)}")
 
 
-            # --- PARTE 2: CLASSIFICAÇÃO GEMINI (LOOP DE LOTE) ---
-
+            # --- CLASSIFICAÇÃO GEMINI ---
             TAMANHO_DO_LOTE = 50 
             dados_classificados_lote = []
             
-            # JSON SCHEMA ATUALIZADO (mantido)
+            # JSON SCHEMA e Configurações (Mantidas)
             json_schema = {
                 "type": "array",
                 "items": {
@@ -135,7 +205,7 @@ if uploaded_files:
                         "valor": {"type": "string", "description": "O valor original da transação."},
                         "tipo": {"type": "string", "description": "O tipo original da transação ('D' para débito, 'C' para crédito)."},
                         "natureza_geral": {"type": "string", "description": "Classificação PRINCIPAL em 'Despesa' ou 'Receita'."},
-                        "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento' ou 'Financiamento'."},
+                        "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento', 'Financiamento' ou 'Pessoal'."},
                         "natureza_analitica": {"type": "string", "description": "Classificação detalhada e linear da transação (Ex: 'Salário', 'Aluguel', 'Fornecedores')."},
                         "natureza_juridica": {"type": "string", "description": "Classificação 'Pessoal' ou 'Empresarial'."}
                     },
@@ -150,10 +220,8 @@ if uploaded_files:
                 thinking_config=types.ThinkingConfig(thinking_budget=0) 
             )
 
-            st.info(f"Analisando {len(df_transacoes)} transações de {file_name} com taxonomia CPC 03...")
-
             n_batches = len(df_transacoes) // TAMANHO_DO_LOTE + (1 if len(df_transacoes) % TAMANHO_DO_LOTE > 0 else 0)
-            progress_bar = st.progress(0, text=f"Iniciando o processamento dos lotes de {file_name}...")
+            progress_bar = st.progress(0, text=f"Iniciando a classificação de {file_name}...")
             
             for j in range(n_batches):
                 start_index = j * TAMANHO_DO_LOTE
@@ -165,10 +233,9 @@ if uploaded_files:
                     for _, row in lote_df.iterrows()
                 )
 
-                # O prompt completo é mantido
                 prompt_lote = f"""
 Você é um analista financeiro sênior da Hedgewise, especializado na composição da Demonstração de Fluxo de Caixa (DFC) conforme o CPC 03 (IAS 7).
-... (Instruções completas omitidas por brevidade, mas o texto do prompt permanece o mesmo) ...
+... (Resto do prompt mantido) ...
 Movimentações extraídas:
 {texto_formatado_lote}
                 """
@@ -185,7 +252,6 @@ Movimentações extraídas:
                     dados_lote = json.loads(resposta_texto)
                     
                     if isinstance(dados_lote, list):
-                        # Adiciona o nome do arquivo a cada transação para identificar a origem
                         for transacao in dados_lote:
                             transacao['arquivo_origem'] = file_name
                         dados_classificados_lote.extend(dados_lote)
@@ -200,10 +266,9 @@ Movimentações extraídas:
             
             todos_dados_classificados.extend(dados_classificados_lote)
 
-        # CRIA O DATAFRAME CONSOLIDADO E SALVA NO SESSION STATE
+        # SALVA O DATAFRAME CONSOLIDADO NO SESSION STATE
         if todos_dados_classificados:
             df_classificado = pd.DataFrame(todos_dados_classificados)
-            # Reorganiza as colunas (necessário antes de salvar para o editor)
             colunas_ordenadas = [
                 'arquivo_origem', 'data', 'historico', 'valor', 'tipo', 
                 'natureza_geral', 'subgrupo', 'natureza_analitica', 'natureza_juridica'
@@ -217,38 +282,48 @@ Movimentações extraídas:
 
 
 # -------------------------------------------------
-# Bloco de EDIÇÃO E DOWNLOAD (Executa em toda interação)
+# Bloco de EDIÇÃO, VISUALIZAÇÃO DFC E DOWNLOAD
 # -------------------------------------------------
 
 if not st.session_state['df_classificado_final'].empty:
     st.subheader("🛠️ Ajuste Manual e Validação dos Dados Classificados")
     
-    # Exibe o editor de dados. O resultado editado é retornado a cada interação.
+    # 1. Editor de Dados (Retorna o DF editado pelo usuário)
     df_editado = st.data_editor(
         st.session_state['df_classificado_final'],
         column_config=COLUMN_CONFIG_EDITOR,
         use_container_width=True,
         hide_index=True,
-        num_rows="dynamic" # Permite adicionar/remover linhas se necessário
+        num_rows="dynamic"
     )
-
-    st.caption(f"Total de Transações: {len(df_editado)}")
     
-    # Gera o CSV para download a partir do DataFrame EDITADO
+    # 2. VISUALIZAÇÃO DFC (Calculado a partir do DF EDITADO)
+    st.subheader("📈 Demonstração do Fluxo de Caixa (DFC/CPC 03) por Mês")
+
+    # Calcula e exibe o DFC
+    df_fluxo = calcular_demonstracao_fluxo_caixa(df_editado)
+    
+    if not df_fluxo.empty:
+        st.dataframe(df_fluxo, use_container_width=True, hide_index=True)
+        st.caption("Valores apresentados conforme a Demonstração do Fluxo de Caixa (DFC), no método direto, agrupados por mês. Valores positivos representam Geração de Caixa, e negativos, Uso de Caixa.")
+    else:
+        st.warning("Não foi possível calcular o DFC. Verifique a coluna 'data' e 'valor'.")
+
+
+    # 3. DOWNLOAD (a partir do DF EDITADO)
+    st.markdown("---")
+    
     @st.cache_data
     def convert_df_to_csv(df):
-        # Remove a coluna de arquivo_origem se o usuário preferir um CSV mais limpo,
-        # mas por padrão vamos mantê-la.
+        # Converte o DF editado em CSV
         return df.to_csv(index=False).encode('utf-8')
 
     csv_data = convert_df_to_csv(df_editado)
     
-    # O botão de download usa o DF editado
     st.download_button(
-        label="⬇️ Baixar Tabela Classificada (CSV)",
+        label="⬇️ Baixar Tabela Classificada (CSV) - Versão Editada",
         data=csv_data,
         file_name='extratos_classificados_editados.csv',
         mime='text/csv',
         key='download_csv_button'
     )
-
