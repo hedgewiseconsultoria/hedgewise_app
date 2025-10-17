@@ -135,7 +135,7 @@ if uploaded_files:
                         "valor": {"type": "string", "description": "O valor original da transação."},
                         "tipo": {"type": "string", "description": "O tipo original da transação ('D' para débito, 'C' para crédito)."},
                         "natureza_geral": {"type": "string", "description": "Classificação PRINCIPAL em 'Despesa' ou 'Receita'."},
-                        "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento', 'Financiamento' ou 'Pessoal'."},
+                        "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento' ou 'Financiamento'."},
                         "natureza_analitica": {"type": "string", "description": "Classificação detalhada e linear da transação (Ex: 'Salário', 'Aluguel', 'Fornecedores')."},
                         "natureza_juridica": {"type": "string", "description": "Classificação 'Pessoal' ou 'Empresarial'."}
                     },
@@ -251,3 +251,4 @@ if not st.session_state['df_classificado_final'].empty:
         mime='text/csv',
         key='download_csv_button'
     )
+
