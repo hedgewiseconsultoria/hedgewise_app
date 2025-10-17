@@ -200,7 +200,7 @@ Movimentações extraídas:
     # -------------------------------------------------
     # Exibir Resultado Final
     # -------------------------------------------------
-    st.subheader("📊 Resultado Final da IA (Extrato Classificado - DFK/CPC 03)")
+    st.subheader("📊 Resultado Final da IA (Extrato Classificado)")
 
     if dados_classificados_totais:
         st.json(dados_classificados_totais)
@@ -218,6 +218,7 @@ Movimentações extraídas:
         st.dataframe(df_classificado, use_container_width=True)
     else:
         st.warning("Nenhum dado classificado foi retornado. Verifique os erros acima.")
+
 
 
 
