@@ -5,14 +5,14 @@ import pandas as pd
 from google import genai
 from google.genai import types
 from io import BytesIO
-from extrato_parser import extrair_texto_pdf, processar_extrato_principal # Certifique-se que extrato_parser.py está atualizado
+from extrato_parser import extrair_texto_pdf, processar_extrato_principal 
 
-# ==================== FUNÇÕES DE CÁLCULO DFC ====================
+# ==================== FUNÇÕES DE CÁLCULO DFC (AJUSTADA) ====================
 
 def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calcula o DFC (Demonstração do Fluxo de Caixa) com base no CPC 03,
-    agrupando por Mês/Ano e Subgrupo.
+    Calcula o DFC (Demonstração do Fluxo de Caixa) detalhado por Natureza Analítica,
+    agrupando por Mês/Ano, Subgrupo e Natureza Analítica.
     """
     if df.empty:
         return pd.DataFrame()
@@ -20,62 +20,86 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
     df_calculo = df.copy()
 
     # 1. Pré-processamento e Limpeza
-    # Converte 'data' para datetime e extrai Mês/Ano
     try:
+        # Tenta a conversão de data (dd/mm/yyyy) e extrai Mês/Ano
         df_calculo['data'] = pd.to_datetime(df_calculo['data'], format='%d/%m/%Y', errors='coerce')
         df_calculo.dropna(subset=['data'], inplace=True)
         df_calculo['Mes_Ano'] = df_calculo['data'].dt.strftime('%Y-%m')
         
-        # Converte 'valor' para float, tratando possíveis strings remanescentes (embora a normalização deva resolver)
-        df_calculo['valor'] = df_calculo['valor'].astype(str).str.replace('.', '').str.replace(',', '.', regex=False).astype(float)
+        # Converte 'valor' para float de forma robusta
+        df_calculo['valor'] = df_calculo['valor'].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).astype(float)
     except Exception as e:
-        st.error(f"Erro ao converter dados para cálculo do DFC: {e}")
+        st.error(f"Erro na conversão inicial de Data/Valor para cálculo do DFC: {e}")
         return pd.DataFrame()
 
     # 2. Determinar o sinal do Fluxo (Débito vs. Crédito, ajustado por natureza_geral)
     # Receita (C) é positivo, Despesa (D) é negativo.
+    # Esta é a conversão final para o cálculo do fluxo.
     df_calculo['Fluxo'] = df_calculo.apply(
         lambda row: row['valor'] if row['natureza_geral'].upper() == 'RECEITA' else -row['valor'], 
         axis=1
     )
 
-    # 3. Agrupamento e Soma
-    # O foco é no 'subgrupo' (Operacional, Investimento, Financiamento, Pessoal)
-    df_agrupado = df_calculo.groupby(['Mes_Ano', 'subgrupo'])['Fluxo'].sum().reset_index()
-    df_agrupado.rename(columns={'subgrupo': 'Atividade', 'Fluxo': 'Valor_Fluxo'}, inplace=True)
+    # 3. Agrupamento Detalhado por Mês, Subgrupo e Natureza Analítica
+    df_detalhado = df_calculo.groupby(['Mes_Ano', 'subgrupo', 'natureza_analitica'])['Fluxo'].sum().reset_index()
+    df_detalhado.rename(columns={'subgrupo': 'Atividade', 'natureza_analitica': 'Detalhe', 'Fluxo': 'Valor_Fluxo'}, inplace=True)
     
-    # 4. Pivotagem para formato de relatório (Meses em colunas)
-    df_pivot = df_agrupado.pivot_table(
-        index='Atividade', 
+    # 4. Pivotagem Detalhada
+    df_pivot_detalhe = df_detalhado.pivot_table(
+        index=['Atividade', 'Detalhe'], 
         columns='Mes_Ano', 
         values='Valor_Fluxo', 
         fill_value=0
     )
     
-    # 5. Adicionar Linhas de Totalização
-    total_por_mes = df_pivot.sum(axis=0)
+    # 5. Cálculo dos Subtotais por Atividade (Subgrupo)
+    df_subtotais = df_pivot_detalhe.groupby(level='Atividade').sum()
     
-    # Dicionário de reordenação de linhas
-    order = {
-        "Operacional": 1, 
-        "Investimento": 2, 
-        "Financiamento": 3, 
-        "Pessoal": 4
-    }
+    # 6. Reconstrução do Relatório DFC em Ordem Hierárquica
     
-    # 6. Reestruturação Final
-    df_final = df_pivot.reset_index()
-    df_final['Ordem'] = df_final['Atividade'].map(order).fillna(5) # Pessoal é 4, outros (se houver) 5
-    df_final = df_final.sort_values(by='Ordem').drop(columns='Ordem')
+    final_df_rows = []
+    
+    # Define a ordem de exibição e os títulos de totalização
+    ordem_atividades = ["Operacional", "Investimento", "Financiamento", "Pessoal"]
+    
+    for atividade in ordem_atividades:
+        if atividade in df_pivot_detalhe.index.get_level_values('Atividade'):
+            # Adiciona os detalhes da Natureza Analítica
+            detalhes = df_pivot_detalhe.loc[atividade]
+            final_df_rows.append((atividade, '')) # Linha de Título da Atividade
+            
+            for index, row in detalhes.iterrows():
+                final_df_rows.append(('', index) + tuple(row.values)) # Detalhe
+            
+            # Adiciona o subtotal da Atividade
+            subtotal_row = df_subtotais.loc[atividade]
+            final_df_rows.append((f'Total {atividade}', '')) + tuple(subtotal_row.values) # Linha de Subtotal
+            final_df_rows.append(('---', '---') + ('---',) * len(subtotal_row)) # Separador
+
+    
+    # Cria o DataFrame final com as colunas do mês
+    colunas_meses = df_pivot_detalhe.columns.tolist()
+    df_final = pd.DataFrame(final_df_rows, columns=['Atividade', 'Detalhe'] + colunas_meses)
     
     # Adiciona a linha de Geração de Caixa Total
-    df_total = pd.DataFrame(total_por_mes).T
-    df_total['Atividade'] = 'GERAÇÃO DE CAIXA TOTAL'
-    df_final = pd.concat([df_final, df_total], ignore_index=True)
-    
-    # Formatação (opcional, mas melhora a visualização)
-    colunas_mes = [col for col in df_final.columns if col != 'Atividade']
-    df_final[colunas_mes] = df_final[colunas_mes].applymap(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    total_caixa = df_subtotais.sum(axis=0)
+    total_caixa_row = pd.Series(['GERAÇÃO DE CAIXA TOTAL', ''])
+    total_caixa_row = pd.concat([total_caixa_row, total_caixa], ignore_index=True)
+    df_final.loc[len(df_final)] = total_caixa_row.tolist()
+
+    # 7. Formatação Numérica para R$
+    def formatar_moeda(val):
+        if isinstance(val, (int, float)):
+            return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".").replace("R$ -", "-R$ ")
+        return val
+
+    # Aplica a formatação em todas as colunas de mês/ano e as colunas de total
+    colunas_formatacao = colunas_meses
+    for col in colunas_formatacao:
+        df_final[col] = df_final[col].apply(formatar_moeda)
+
+    # Limpa as linhas '---'
+    df_final = df_final[df_final['Atividade'] != '---'].reset_index(drop=True)
     
     return df_final
 
@@ -298,16 +322,30 @@ if not st.session_state['df_classificado_final'].empty:
     )
     
     # 2. VISUALIZAÇÃO DFC (Calculado a partir do DF EDITADO)
-    st.subheader("📈 Demonstração do Fluxo de Caixa (DFC/CPC 03) por Mês")
+    st.subheader("📈 Demonstração do Fluxo de Caixa (DFC/CPC 03) Detalhada por Mês")
 
     # Calcula e exibe o DFC
+    # Usa o df_editado para garantir que a visualização reflita os ajustes manuais
     df_fluxo = calcular_demonstracao_fluxo_caixa(df_editado)
     
     if not df_fluxo.empty:
-        st.dataframe(df_fluxo, use_container_width=True, hide_index=True)
-        st.caption("Valores apresentados conforme a Demonstração do Fluxo de Caixa (DFC), no método direto, agrupados por mês. Valores positivos representam Geração de Caixa, e negativos, Uso de Caixa.")
+        # Define um estilo de exibição para destacar os totais
+        def highlight_total(row):
+            is_total = row['Atividade'].startswith('Total') or row['Atividade'].startswith('GERAÇÃO')
+            if is_total:
+                return ['background-color: #f0f0f5; font-weight: bold'] * len(row)
+            if row['Detalhe'] == '': # Linha de Título do Subgrupo
+                return ['font-weight: bold; background-color: #e0e0e0'] * len(row)
+            return [''] * len(row)
+
+        st.dataframe(
+            df_fluxo.style.apply(highlight_total, axis=1),
+            use_container_width=True, 
+            hide_index=True
+        )
+        st.caption("Valores agrupados por Atividade (Fluxo) e detalhados pela Natureza Analítica (subcategoria). Valores positivos representam Geração de Caixa, e negativos, Uso de Caixa.")
     else:
-        st.warning("Não foi possível calcular o DFC. Verifique a coluna 'data' e 'valor'.")
+        st.warning("Não foi possível calcular o DFC. Verifique se as colunas 'data', 'valor' e as classificações estão válidas.")
 
 
     # 3. DOWNLOAD (a partir do DF EDITADO)
@@ -315,7 +353,6 @@ if not st.session_state['df_classificado_final'].empty:
     
     @st.cache_data
     def convert_df_to_csv(df):
-        # Converte o DF editado em CSV
         return df.to_csv(index=False).encode('utf-8')
 
     csv_data = convert_df_to_csv(df_editado)
