@@ -7,7 +7,7 @@ from google.genai import types
 from io import BytesIO
 from extrato_parser import extrair_texto_pdf, processar_extrato_principal 
 
-# ==================== FUNÇÕES DE CÁLCULO DFC (AJUSTADA) ====================
+# ==================== FUNÇÕES DE CÁLCULO DFC (AJUSTADA E CORRIGIDA) ====================
 
 def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -27,14 +27,13 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
         df_calculo['Mes_Ano'] = df_calculo['data'].dt.strftime('%Y-%m')
         
         # Converte 'valor' para float de forma robusta
+        # Remove pontos (milhar), troca vírgula por ponto (decimal) e converte
         df_calculo['valor'] = df_calculo['valor'].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).astype(float)
     except Exception as e:
         st.error(f"Erro na conversão inicial de Data/Valor para cálculo do DFC: {e}")
         return pd.DataFrame()
 
-    # 2. Determinar o sinal do Fluxo (Débito vs. Crédito, ajustado por natureza_geral)
-    # Receita (C) é positivo, Despesa (D) é negativo.
-    # Esta é a conversão final para o cálculo do fluxo.
+    # 2. Determinar o sinal do Fluxo (Receita = positivo, Despesa = negativo)
     df_calculo['Fluxo'] = df_calculo.apply(
         lambda row: row['valor'] if row['natureza_geral'].upper() == 'RECEITA' else -row['valor'], 
         axis=1
@@ -59,52 +58,57 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
     
     final_df_rows = []
     
-    # Define a ordem de exibição e os títulos de totalização
+    # Define a ordem de exibição
     ordem_atividades = ["Operacional", "Investimento", "Financiamento", "Pessoal"]
     
     for atividade in ordem_atividades:
         if atividade in df_pivot_detalhe.index.get_level_values('Atividade'):
+            # Adiciona a linha de Título da Atividade (Ex: Operacional)
+            final_df_rows.append((atividade, '') + (0.0,) * len(df_pivot_detalhe.columns)) # Título tem 0.0 nas colunas para manter o tipo
+            
             # Adiciona os detalhes da Natureza Analítica
             detalhes = df_pivot_detalhe.loc[atividade]
-            final_df_rows.append((atividade, '')) # Linha de Título da Atividade
-            
             for index, row in detalhes.iterrows():
-                final_df_rows.append(('', index) + tuple(row.values)) # Detalhe
+                final_df_rows.append(('', index) + tuple(row.values)) # Detalhe (Ex: Salário)
             
             # Adiciona o subtotal da Atividade
             subtotal_row = df_subtotais.loc[atividade]
-            final_df_rows.append((f'Total {atividade}', '')) + tuple(subtotal_row.values) # Linha de Subtotal
-            final_df_rows.append(('---', '---') + ('---',) * len(subtotal_row)) # Separador
+            # CORREÇÃO APLICADA AQUI: CONCATENAR TUPLES ANTES DE CHAMAR APPEND
+            final_df_rows.append((f'Total {atividade}', '') + tuple(subtotal_row.values)) # Linha de Subtotal
+            final_df_rows.append(('', '')) # Linha Vazia para espaçamento
 
     
     # Cria o DataFrame final com as colunas do mês
     colunas_meses = df_pivot_detalhe.columns.tolist()
     df_final = pd.DataFrame(final_df_rows, columns=['Atividade', 'Detalhe'] + colunas_meses)
     
-    # Adiciona a linha de Geração de Caixa Total
+    # 7. Adiciona a linha de Geração de Caixa Total
     total_caixa = df_subtotais.sum(axis=0)
-    total_caixa_row = pd.Series(['GERAÇÃO DE CAIXA TOTAL', ''])
-    total_caixa_row = pd.concat([total_caixa_row, total_caixa], ignore_index=True)
-    df_final.loc[len(df_final)] = total_caixa_row.tolist()
+    total_caixa_tuple = ('GERAÇÃO DE CAIXA TOTAL', '') + tuple(total_caixa.values)
+    df_final.loc[len(df_final)] = total_caixa_tuple
 
-    # 7. Formatação Numérica para R$
+    # 8. Formatação Numérica para R$
     def formatar_moeda(val):
         if isinstance(val, (int, float)):
-            return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".").replace("R$ -", "-R$ ")
+            # Formatação robusta: R$ 1.234,56 ou -R$ 1.234,56
+            if val < 0:
+                val_abs = abs(val)
+                return f"-R$ {val_abs:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".").replace("-R$ -", "R$ ")
+            return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         return val
 
-    # Aplica a formatação em todas as colunas de mês/ano e as colunas de total
+    # Aplica a formatação em todas as colunas de mês/ano
     colunas_formatacao = colunas_meses
     for col in colunas_formatacao:
         df_final[col] = df_final[col].apply(formatar_moeda)
 
-    # Limpa as linhas '---'
-    df_final = df_final[df_final['Atividade'] != '---'].reset_index(drop=True)
+    # Remove linhas vazias de espaçamento que podem ter sido criadas sem o tuple completo
+    df_final = df_final[df_final['Atividade'] != ''].reset_index(drop=True)
     
     return df_final
 
 
-# ==================== CONFIGURAÇÃO DO STREAMLIT ====================
+# ==================== CONFIGURAÇÃO DO STREAMLIT (MANTIDA) ====================
 
 # -------------------------------------------------
 # Configuração do Streamlit
@@ -259,7 +263,23 @@ if uploaded_files:
 
                 prompt_lote = f"""
 Você é um analista financeiro sênior da Hedgewise, especializado na composição da Demonstração de Fluxo de Caixa (DFC) conforme o CPC 03 (IAS 7).
-... (Resto do prompt mantido) ...
+Sua tarefa é analisar AS {len(lote_df)} MOVIMENTAÇÕES BANCÁRIAS extraídas de "{file_name}" e retornar um JSON estritamente conforme o schema fornecido.
+
+**Instruções de Classificação (Obrigatórias):**
+
+1.  **natureza_geral** (Grupo): Classifique estritamente como **"Receita"** ou **"Despesa"**. (Observar se o Tipo original é 'C'rédito ou 'D'ébito, mas sempre priorizar o significado da transação).
+2.  **subgrupo** (DFC/CPC 03): Classifique estritamente em uma das quatro opções:
+    * **"Operacional"**: Transações que afetam o resultado e o capital de giro (vendas, compras, salários, aluguéis, impostos, fornecedores, etc.).
+    * **"Investimento"**: Aquisição ou venda de ativos não circulantes (imóveis, máquinas, participações societárias), desembolsos com aplicações financeiras, resgates de aplicações financeiras, rendimentos de aplicações financeiras.
+    * **"Financiamento"**: Transações com capital de terceiros ou próprio (empréstimos, integralização/distribuição de capital, dividendos), pagamentos de juros, tarifas bancárias, pagamentos de empréstimos, recebimento de empréstimos.
+    * **"Pessoal"**: Despesas pessoais do sócio/empreendedor pagas pela conta da empresa (retiradas, despesas particulares, etc.), gastos que fujam da lógica do contexto empresarial.
+3.  **natureza_analitica** (Subgrupo Detalhado):
+    * Identifique o destino/origem de forma detalhada e linear.
+    * **REGRA DE PREENCHIMENTO:** Se o histórico for genérico (ex: "Pagamento de Boleto", "Transferência TED", "Pix") e não houver informação clara, assuma **"Fornecedores"** ou **"Despesas Gerais Operacionais"** se for um débito, e **"Vendas/Serviços"** se for um crédito, pois a premissa é que a conta é empresarial.
+4.  **natureza_juridica**: Classifique estritamente como **"Empresarial"** ou **"Pessoal"**.
+
+Responda APENAS com o JSON.
+
 Movimentações extraídas:
 {texto_formatado_lote}
                 """
@@ -325,7 +345,6 @@ if not st.session_state['df_classificado_final'].empty:
     st.subheader("📈 Demonstração do Fluxo de Caixa (DFC/CPC 03) Detalhada por Mês")
 
     # Calcula e exibe o DFC
-    # Usa o df_editado para garantir que a visualização reflita os ajustes manuais
     df_fluxo = calcular_demonstracao_fluxo_caixa(df_editado)
     
     if not df_fluxo.empty:
