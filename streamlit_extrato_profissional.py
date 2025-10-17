@@ -7,7 +7,6 @@ from google.genai import types
 from io import BytesIO
 
 # IMPORTAÇÕES ESSENCIAIS DO SEU CÓDIGO ORIGINAL
-# Ajustado para importar a nova função mestra de processamento
 from extrato_parser import extrair_texto_pdf, processar_extrato_principal
 
 # -------------------------------------------------
@@ -16,97 +15,107 @@ from extrato_parser import extrair_texto_pdf, processar_extrato_principal
 st.set_page_config(page_title="Hedgewise - Extrato Profissional", layout="wide")
 st.title("Análise de Extrato Bancário com IA")
 
-uploaded_file = st.file_uploader("📎 Envie o extrato bancário em PDF", type=["pdf"])
+# 1. AJUSTE: Permite múltiplos arquivos
+uploaded_files = st.file_uploader(
+    "📎 Envie os extratos bancários em PDF (múltiplos arquivos permitidos)",
+    type=["pdf"],
+    accept_multiple_files=True  # <--- MUDANÇA PRINCIPAL
+)
+
+# Inicializa uma lista para armazenar todos os resultados classificados
+todos_dados_classificados = []
 
 # -------------------------------------------------
 # Lógica de processamento (Início)
 # -------------------------------------------------
-if uploaded_file:
-    st.info("Extraindo texto do PDF...")
-
-    pdf_bytes = uploaded_file.read()
-    pdf_stream = BytesIO(pdf_bytes)
-
-    # A extração de texto ainda é importante para debug e inspeção
-    try:
-        texto = extrair_texto_pdf(pdf_stream)
-    except Exception as e:
-        st.error(f"Erro ao ler PDF: {e}")
-        st.stop()
-
-    if not texto or len(texto.strip()) < 50:
-        st.error("Nenhum texto legível foi extraído. O arquivo pode estar protegido ou ilegível.")
-        st.stop()
-
-    with st.expander("📄 Texto extraído do PDF"):
-        st.text_area("Conteúdo do extrato:", texto, height=300)
+if uploaded_files:
     
-    # --- NOVO BLOCO DE PROCESSAMENTO UNIVERSAL ---
-    
-    # Adiciona um botão para iniciar o processamento, se for desejado
+    # Adiciona o botão de processamento
     if st.button("🚀 Iniciar Processamento Universal das Transações"):
         
-        st.info("Iniciando processamento universal (Best-Effort) de transações...")
-        
-        # O PDF precisa ser lido novamente a partir do início para a nova função
-        pdf_stream.seek(0)
-        
-        try:
-            # Chama a função mestra que executa todos os processadores e escolhe o melhor DF
-            df_transacoes = processar_extrato_principal(pdf_stream)
-        except Exception as e:
-            st.error(f"Erro no processamento universal: {e}")
-            st.stop()
-
-        if df_transacoes.empty:
-            st.warning("Não foi possível identificar movimentações financeiras válidas neste PDF, mesmo com todos os modelos.")
-            st.stop()
-            
-        if 'Tipo' not in df_transacoes.columns:
-            st.error("A coluna 'Tipo' (D/C) não foi gerada na normalização. O processamento da IA não funcionará corretamente.")
-            st.stop()
-
-        st.success(f"Transações Extraídas ({len(df_transacoes)})")
-        st.dataframe(df_transacoes, use_container_width=True)
-
-        # -------------------------------------------------
-        # 3. CONFIGURAÇÕES DE LOTE E ESTRUTURA PARA GEMINI (CPC 03)
-        # -------------------------------------------------
-        
-        TAMANHO_DO_LOTE = 50 
-        
-        # JSON SCHEMA ATUALIZADO com as novas colunas
-        json_schema = {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "data": {"type": "string", "description": "A data da transação."},
-                    "historico": {"type": "string", "description": "O histórico ou descrição original da transação."},
-                    "valor": {"type": "string", "description": "O valor original da transação."},
-                    "tipo": {"type": "string", "description": "O tipo original da transação ('D' para débito, 'C' para crédito)."},
-                    "natureza_geral": {"type": "string", "description": "Classificação PRINCIPAL em 'Despesa' ou 'Receita'."}, # Nova Coluna
-                    "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento', 'Financiamento' ou 'Pessoal'."}, # Nova Coluna
-                    "natureza_analitica": {"type": "string", "description": "Classificação detalhada e linear da transação (Ex: 'Salário', 'Aluguel', 'Fornecedores')."}, # Categoria anterior
-                    "natureza_juridica": {"type": "string", "description": "Classificação 'Pessoal' ou 'Empresarial'."} # Natureza anterior
-                },
-                "required": ["data", "historico", "valor", "tipo", "natureza_geral", "subgrupo", "natureza_analitica", "natureza_juridica"]
-            }
-        }
-        
-        dados_classificados_totais = []
         API_KEY = os.getenv("GEMINI_API_KEY")
-
         if not API_KEY:
             st.error("Chave da API do Gemini (GEMINI_API_KEY) não configurada.")
             st.stop()
-            
-        st.info(f"Analisando o extrato em {len(df_transacoes) // TAMANHO_DO_LOTE + 1} lotes com taxonomia CPC 03...")
-
+        
         try:
             client = genai.Client(api_key=API_KEY)
+        except Exception as e:
+            st.error(f"Erro ao inicializar o cliente Gemini: {e}")
+            st.stop()
 
-            # Configurações para a geração (Forçando JSON e desabilitando Thinking)
+        
+        # 2. AJUSTE: LOOP SOBRE CADA ARQUIVO ENVIADO
+        for i, uploaded_file in enumerate(uploaded_files):
+            file_name = uploaded_file.name
+            st.subheader(f"📂 Processando Arquivo {i+1} de {len(uploaded_files)}: {file_name}")
+            
+            pdf_bytes = uploaded_file.read()
+            pdf_stream = BytesIO(pdf_bytes)
+
+            # --- PARTE 1: EXTRAÇÃO E NORMALIZAÇÃO (extrato_parser.py) ---
+            
+            # A extração de texto ainda é importante para debug e inspeção
+            try:
+                # O seek(0) é crucial para garantir que o stream comece do início
+                # A função extrair_texto_pdf fará a leitura inicial
+                pdf_stream.seek(0)
+                texto = extrair_texto_pdf(pdf_stream)
+            except Exception as e:
+                st.error(f"Erro ao ler PDF de {file_name}: {e}. Pulando para o próximo.")
+                continue
+
+            if not texto or len(texto.strip()) < 50:
+                st.warning(f"Nenhum texto legível foi extraído de {file_name}. Pulando.")
+                continue
+
+            with st.expander(f"📄 Texto extraído de {file_name}"):
+                st.text_area(f"Conteúdo do extrato {file_name}:", texto, height=200)
+
+            st.info("Iniciando processamento universal (Best-Effort) de transações...")
+
+            # Chama a função mestra que executa todos os processadores e escolhe o melhor DF
+            # Precisa garantir que o stream esteja no início novamente antes de chamar
+            pdf_stream.seek(0) 
+            df_transacoes = processar_extrato_principal(pdf_stream)
+
+            if df_transacoes.empty:
+                st.warning(f"Não foi possível identificar movimentações financeiras válidas em {file_name}.")
+                continue
+                
+            if 'Tipo' not in df_transacoes.columns:
+                st.error(f"A coluna 'Tipo' (D/C) não foi gerada para {file_name}. Pulando.")
+                continue
+
+            st.success(f"Transações Extraídas de {file_name}: {len(df_transacoes)}")
+            # Opcional: mostrar as transações extraídas por arquivo
+            # st.dataframe(df_transacoes, use_container_width=True)
+
+
+            # --- PARTE 2: CLASSIFICAÇÃO GEMINI (LOOP DE LOTE) ---
+
+            TAMANHO_DO_LOTE = 50 
+            dados_classificados_lote = []
+            
+            # JSON SCHEMA ATUALIZADO (mantido)
+            json_schema = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "data": {"type": "string", "description": "A data da transação."},
+                        "historico": {"type": "string", "description": "O histórico ou descrição original da transação."},
+                        "valor": {"type": "string", "description": "O valor original da transação."},
+                        "tipo": {"type": "string", "description": "O tipo original da transação ('D' para débito, 'C' para crédito)."},
+                        "natureza_geral": {"type": "string", "description": "Classificação PRINCIPAL em 'Despesa' ou 'Receita'."},
+                        "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento', 'Financiamento' ou 'Pessoal'."},
+                        "natureza_analitica": {"type": "string", "description": "Classificação detalhada e linear da transação (Ex: 'Salário', 'Aluguel', 'Fornecedores')."},
+                        "natureza_juridica": {"type": "string", "description": "Classificação 'Pessoal' ou 'Empresarial'."}
+                    },
+                    "required": ["data", "historico", "valor", "tipo", "natureza_geral", "subgrupo", "natureza_analitica", "natureza_juridica"]
+                }
+            }
+            
             config = types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=json_schema,
@@ -114,27 +123,25 @@ if uploaded_file:
                 thinking_config=types.ThinkingConfig(thinking_budget=0) 
             )
 
+            st.info(f"Analisando {len(df_transacoes)} transações de {file_name} com taxonomia CPC 03...")
+
             n_batches = len(df_transacoes) // TAMANHO_DO_LOTE + (1 if len(df_transacoes) % TAMANHO_DO_LOTE > 0 else 0)
-            progress_bar = st.progress(0, text="Iniciando o processamento dos lotes...")
+            progress_bar = st.progress(0, text=f"Iniciando o processamento dos lotes de {file_name}...")
             
-            for i in range(n_batches):
-                start_index = i * TAMANHO_DO_LOTE
+            for j in range(n_batches):
+                start_index = j * TAMANHO_DO_LOTE
                 end_index = start_index + TAMANHO_DO_LOTE
                 lote_df = df_transacoes.iloc[start_index:end_index]
                 
-                # Prepara o texto para o lote atual
                 texto_formatado_lote = "\n".join(
                     f"{row.Data} | {row['Histórico']} | {row['Valor']} | Tipo: {row['Tipo']}"
                     for _, row in lote_df.iterrows()
                 )
 
-                # -------------------------------------------------
-                # NOVO PROMPT ALTAMENTE ESTRUTURADO PARA CLASSIFICAÇÃO DFC/CPC 03
-                # -------------------------------------------------
                 prompt_lote = f"""
 Você é um analista financeiro sênior da Hedgewise, especializado na composição da Demonstração de Fluxo de Caixa (DFC) conforme o CPC 03 (IAS 7).
 
-Sua tarefa é analisar AS {len(lote_df)} MOVIMENTAÇÕES BANCÁRIAS extraídas e retornar um JSON estritamente conforme o schema fornecido.
+Sua tarefa é analisar AS {len(lote_df)} MOVIMENTAÇÕES BANCÁRIAS extraídas de "{file_name}" e retornar um JSON estritamente conforme o schema fornecido.
 
 **Instruções de Classificação (Obrigatórias):**
 
@@ -155,54 +162,70 @@ Movimentações extraídas:
 {texto_formatado_lote}
                 """
                 
-                # Atualiza o progresso e envia o lote
-                progress_bar.progress((i + 1) / n_batches, text=f"Processando lote {i+1} de {n_batches} ({len(lote_df)} transações)...")
+                progress_bar.progress((j + 1) / n_batches, text=f"Lote {j+1} de {n_batches} para {file_name}...")
                 
-                # Chamada à API
-                response = client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=prompt_lote,
-                    config=config,
-                )
-
-                resposta_texto = response.text
-
-                # Processar e armazenar o JSON do lote
                 try:
+                    response = client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=prompt_lote,
+                        config=config,
+                    )
+                    resposta_texto = response.text
                     dados_lote = json.loads(resposta_texto)
+                    
                     if isinstance(dados_lote, list):
-                        dados_classificados_totais.extend(dados_lote)
+                        # Adiciona o nome do arquivo a cada transação para identificar a origem
+                        for transacao in dados_lote:
+                            transacao['arquivo_origem'] = file_name
+                        dados_classificados_lote.extend(dados_lote)
                     else:
-                        st.warning(f"Lote {i+1}: Retorno JSON inesperado. O resultado deste lote foi ignorado.")
-                except json.JSONDecodeError as e:
-                    st.error(f"Lote {i+1} falhou ao decodificar JSON. Certifique-se de que o modelo produziu um JSON válido.")
-                    st.text_area(f"Resposta bruta do Lote {i+1}:", resposta_texto, height=150)
-            
+                        st.warning(f"Lote {j+1} de {file_name}: Retorno JSON inesperado. Ignorado.")
+
+                except json.JSONDecodeError:
+                    st.error(f"Lote {j+1} de {file_name} falhou. Verifique a resposta bruta abaixo.")
+                    # st.text_area(f"Resposta bruta do Lote {j+1} de {file_name}:", resposta_texto, height=150)
+                except Exception as e:
+                    st.error(f"Erro na chamada da API para {file_name}, lote {j+1}: {e}")
+                    
             progress_bar.empty()
-            st.success("✅ Classificação de todas as movimentações concluída com sucesso!")
-
-        except Exception as e:
-            st.error(f"Erro ao conectar com a API do Google Gemini ou durante o processamento: {e}")
-            st.stop()
+            st.success(f"✅ Classificação de {file_name} concluída.")
+            
+            # Adiciona os resultados deste arquivo à lista total
+            todos_dados_classificados.extend(dados_classificados_lote)
 
         # -------------------------------------------------
-        # Exibir Resultado Final
+        # Exibir Resultado Final GLOBAL
         # -------------------------------------------------
-        st.subheader("📊 Resultado Final da IA (Extrato Classificado)")
+        st.subheader("📊 Resultado Final da IA (Extrato Classificado) - Consolidação")
 
-        if dados_classificados_totais:
-            st.json(dados_classificados_totais)
+        if todos_dados_classificados:
+            
+            st.success(f"Processamento de todos os arquivos concluído! Total de {len(todos_dados_classificados)} transações classificadas.")
 
             st.subheader("Tabela Classificada Completa")
-            df_classificado = pd.DataFrame(dados_classificados_totais)
+            df_classificado = pd.DataFrame(todos_dados_classificados)
             
-            # Reorganiza as colunas para melhor visualização
+            # Reorganiza as colunas e inclui a nova coluna de origem
             colunas_ordenadas = [
-                'data', 'historico', 'valor', 'tipo', 
+                'arquivo_origem', 'data', 'historico', 'valor', 'tipo', 
                 'natureza_geral', 'subgrupo', 'natureza_analitica', 'natureza_juridica'
             ]
             df_classificado = df_classificado[colunas_ordenadas]
             
             st.dataframe(df_classificado, use_container_width=True)
+            
+            # Opcional: Adicionar um botão de download
+            @st.cache_data
+            def convert_df_to_csv(df):
+                return df.to_csv(index=False).encode('utf-8')
+
+            csv = convert_df_to_csv(df_classificado)
+            st.download_button(
+                label="⬇️ Baixar Tabela Completa (CSV)",
+                data=csv,
+                file_name='extratos_classificados_consolidado.csv',
+                mime='text/csv',
+            )
+            
         else:
-            st.warning("Nenhum dado classificado foi retornado. Verifique os erros acima.")
+            st.warning("Nenhum dado classificado foi retornado após o processamento de todos os arquivos. Verifique os erros acima.")
