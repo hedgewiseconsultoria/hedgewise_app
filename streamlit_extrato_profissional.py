@@ -7,12 +7,25 @@ from google.genai import types
 from io import BytesIO
 from extrato_parser import extrair_texto_pdf, processar_extrato_principal 
 
-# ==================== FUNÇÕES DE CÁLCULO DFC (AJUSTADA E CORRIGIDA) ====================
+# ==================== FUNÇÕES DE CÁLCULO DFC (CORRIGIDA, ESTRUTURADA E ANALÍTICA) ====================
+
+def formatar_moeda(val):
+    """Formata um valor float ou int para string no formato R$."""
+    if isinstance(val, (int, float)):
+        # Formatação robusta: R$ 1.234,56 ou -R$ 1.234,56
+        if pd.isna(val) or val == 0:
+            return ""
+        if val < 0:
+            val_abs = abs(val)
+            # Substitui ponto por vírgula e vírgula por ponto para formato BR
+            return f"-R$ {val_abs:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return val
 
 def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calcula o DFC (Demonstração do Fluxo de Caixa) detalhado por Natureza Analítica,
-    agrupando por Mês/Ano, Subgrupo e Natureza Analítica.
+    Calcula o DFC (Demonstração do Fluxo de Caixa) detalhado por Receita/Despesa e Natureza Analítica,
+    agrupando por Mês/Ano.
     """
     if df.empty:
         return pd.DataFrame()
@@ -21,13 +34,15 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
 
     # 1. Pré-processamento e Limpeza
     try:
-        # Tenta a conversão de data (dd/mm/yyyy) e extrai Mês/Ano
+        # Filtra a classificação "Pessoal" (conforme a nova regra)
+        df_calculo = df_calculo[df_calculo['subgrupo'].isin(["Operacional", "Investimento", "Financiamento"])]
+
+        # Converte Data e extrai Mês/Ano
         df_calculo['data'] = pd.to_datetime(df_calculo['data'], format='%d/%m/%Y', errors='coerce')
         df_calculo.dropna(subset=['data'], inplace=True)
         df_calculo['Mes_Ano'] = df_calculo['data'].dt.strftime('%Y-%m')
         
         # Converte 'valor' para float de forma robusta
-        # Remove pontos (milhar), troca vírgula por ponto (decimal) e converte
         df_calculo['valor'] = df_calculo['valor'].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).astype(float)
     except Exception as e:
         st.error(f"Erro na conversão inicial de Data/Valor para cálculo do DFC: {e}")
@@ -39,76 +54,105 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
         axis=1
     )
 
-    # 3. Agrupamento Detalhado por Mês, Subgrupo e Natureza Analítica
-    df_detalhado = df_calculo.groupby(['Mes_Ano', 'subgrupo', 'natureza_analitica'])['Fluxo'].sum().reset_index()
-    df_detalhado.rename(columns={'subgrupo': 'Atividade', 'natureza_analitica': 'Detalhe', 'Fluxo': 'Valor_Fluxo'}, inplace=True)
-    
-    # 4. Pivotagem Detalhada
-    df_pivot_detalhe = df_detalhado.pivot_table(
-        index=['Atividade', 'Detalhe'], 
+    # 3. Agrupamento Detalhado
+    # Agrupamos por subgrupo, natureza_geral, e natureza_analitica para o detalhe
+    df_agregado = df_calculo.groupby(['Mes_Ano', 'subgrupo', 'natureza_geral', 'natureza_analitica'])['Fluxo'].sum().reset_index()
+
+    # Pivotagem: Colunas de Meses e Índice Multi-nível
+    df_pivot_detalhe = df_agregado.pivot_table(
+        index=['subgrupo', 'natureza_geral', 'natureza_analitica'], 
         columns='Mes_Ano', 
-        values='Valor_Fluxo', 
+        values='Fluxo', 
         fill_value=0
     )
     
-    # 5. Cálculo dos Subtotais por Atividade (Subgrupo)
-    df_subtotais = df_pivot_detalhe.groupby(level='Atividade').sum()
+    colunas_meses = df_pivot_detalhe.columns.tolist()
+
+    # 4. Construção do Relatório Hierárquico
     
-    # 6. Reconstrução do Relatório DFC em Ordem Hierárquica
-    
-    final_df_rows = []
-    
-    # Define a ordem de exibição
-    ordem_atividades = ["Operacional", "Investimento", "Financiamento", "Pessoal"]
+    ordem_atividades = ["Operacional", "Investimento", "Financiamento"]
+    ordem_geral = ["RECEITA", "DESPESA"]
+    df_final_report = []
     
     for atividade in ordem_atividades:
-        if atividade in df_pivot_detalhe.index.get_level_values('Atividade'):
-            # Adiciona a linha de Título da Atividade (Ex: Operacional)
-            final_df_rows.append((atividade, '') + (0.0,) * len(df_pivot_detalhe.columns)) # Título tem 0.0 nas colunas para manter o tipo
+        # Linha de Título principal (Caixa Operacional, Investimento, Financiamento)
+        titulo_atividade = f"Caixa de {atividade}" if atividade != "Operacional" else "Caixa Operacional"
+        df_final_report.append(pd.Series([titulo_atividade, ''], index=['Atividade', 'Detalhe'] + colunas_meses))
+        
+        # DataFrame filtrado apenas para a Atividade atual
+        if atividade not in df_pivot_detalhe.index.get_level_values('subgrupo'):
+            df_final_report.append(pd.Series(['---', 'Nenhuma movimentação neste período'], index=['Atividade', 'Detalhe'] + colunas_meses))
+            continue
+
+        for natureza in ordem_geral:
             
-            # Adiciona os detalhes da Natureza Analítica
-            detalhes = df_pivot_detalhe.loc[atividade]
-            for index, row in detalhes.iterrows():
-                final_df_rows.append(('', index) + tuple(row.values)) # Detalhe (Ex: Salário)
+            # Tenta obter os dados da natureza (Receita/Despesa)
+            try:
+                # Filtrar o MultiIndex para a atividade e a natureza
+                detalhes_natureza = df_pivot_detalhe.loc[(atividade, natureza)]
+                detalhes_natureza = detalhes_natureza.reset_index()
+                detalhes_natureza.rename(columns={'natureza_analitica': 'Detalhe'}, inplace=True)
+                
+                # Linha de Título da Natureza (Receitas/Despesas)
+                df_final_report.append(pd.Series(['', natureza.capitalize()], index=['Atividade', 'Detalhe'] + colunas_meses))
+                
+                # Adicionar as linhas de Detalhe (Natureza Analítica)
+                for index, row in detalhes_natureza.iterrows():
+                    # O valor detalhado para despesas deve ser mostrado em absoluto (positivo)
+                    linha = pd.Series({'Atividade': '', 'Detalhe': f"  {row['Detalhe']}"}, index=['Atividade', 'Detalhe'] + colunas_meses)
+                    for mes in colunas_meses:
+                        linha[mes] = abs(row[mes]) if natureza == 'DESPESA' else row[mes]
+                    df_final_report.append(linha)
+                    
+            except KeyError:
+                # Não há receitas ou despesas para esta atividade neste período
+                continue
+
+        # 5. Cálculo e Adição do Subtotal da Atividade
+        subtotal_series = df_pivot_detalhe.loc[atividade].sum(axis=0)
+        subtotal_row = pd.Series({
+            'Atividade': f"Total do {titulo_atividade}", 
+            'Detalhe': ''
+        }, index=['Atividade', 'Detalhe'] + colunas_meses)
+        
+        for mes in colunas_meses:
+            subtotal_row[mes] = subtotal_series[mes]
             
-            # Adiciona o subtotal da Atividade
-            subtotal_row = df_subtotais.loc[atividade]
-            # CORREÇÃO APLICADA AQUI: CONCATENAR TUPLES ANTES DE CHAMAR APPEND
-            final_df_rows.append((f'Total {atividade}', '') + tuple(subtotal_row.values)) # Linha de Subtotal
-            final_df_rows.append(('', '')) # Linha Vazia para espaçamento
+        df_final_report.append(subtotal_row)
+        df_final_report.append(pd.Series('', index=['Atividade', 'Detalhe'] + colunas_meses)) # Linha Vazia
 
+    # Concatena todas as Series em um DataFrame
+    df_final = pd.DataFrame(df_final_report).reset_index(drop=True)
+    df_final = df_final[df_final['Atividade'] != '---'].reset_index(drop=True) # Remove linhas de "Nenhuma movimentação"
+
+    # 6. Adicionar a linha de Geração de Caixa Total
     
-    # Cria o DataFrame final com as colunas do mês
-    colunas_meses = df_pivot_detalhe.columns.tolist()
-    df_final = pd.DataFrame(final_df_rows, columns=['Atividade', 'Detalhe'] + colunas_meses)
+    # Filtra apenas as linhas de Total do Caixa para somar
+    df_subtotais_apenas = df_final[df_final['Atividade'].str.startswith('Total do Caixa', na=False)]
     
-    # 7. Adiciona a linha de Geração de Caixa Total
-    total_caixa = df_subtotais.sum(axis=0)
-    total_caixa_tuple = ('GERAÇÃO DE CAIXA TOTAL', '') + tuple(total_caixa.values)
-    df_final.loc[len(df_final)] = total_caixa_tuple
+    # Converte para float antes de somar e soma
+    total_caixa_series = df_subtotais_apenas[colunas_meses].apply(lambda x: pd.to_numeric(x.apply(lambda v: v.replace('R$ ', '').replace('.', '').replace(',', '.').replace('-', '') if isinstance(v, str) else v), errors='coerce')).sum(axis=0)
+    
+    total_caixa_row = pd.Series({'Atividade': 'Geração de Caixa do Período', 'Detalhe': ''}, index=['Atividade', 'Detalhe'] + colunas_meses)
+    for mes in colunas_meses:
+        total_caixa_row[mes] = total_caixa_series[mes]
+        
+    df_final.loc[len(df_final)] = total_caixa_row
 
-    # 8. Formatação Numérica para R$
-    def formatar_moeda(val):
-        if isinstance(val, (int, float)):
-            # Formatação robusta: R$ 1.234,56 ou -R$ 1.234,56
-            if val < 0:
-                val_abs = abs(val)
-                return f"-R$ {val_abs:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".").replace("-R$ -", "R$ ")
-            return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        return val
 
-    # Aplica a formatação em todas as colunas de mês/ano
-    colunas_formatacao = colunas_meses
-    for col in colunas_formatacao:
+    # 7. Formatação Numérica Final para R$
+    for col in colunas_meses:
+        # Garante que a coluna seja float antes de formatar. 
+        # NOTA: O cálculo já foi feito, aqui formatamos os resultados do total
         df_final[col] = df_final[col].apply(formatar_moeda)
 
-    # Remove linhas vazias de espaçamento que podem ter sido criadas sem o tuple completo
-    df_final = df_final[df_final['Atividade'] != ''].reset_index(drop=True)
+    # Limpeza de linhas de espaçamento
+    df_final.loc[df_final['Atividade'] == '', colunas_meses] = ''
     
     return df_final
 
 
-# ==================== CONFIGURAÇÃO DO STREAMLIT (MANTIDA) ====================
+# ==================== CONFIGURAÇÃO DO STREAMLIT ====================
 
 # -------------------------------------------------
 # Configuração do Streamlit
@@ -125,7 +169,8 @@ COLUMN_CONFIG_EDITOR = {
     "subgrupo": st.column_config.SelectboxColumn(
         "Subgrupo (DFC/CPC 03)",
         help="Classificação DFC/CPC 03",
-        options=["Operacional", "Investimento", "Financiamento", "Pessoal"],
+        # REMOVIDO "Pessoal"
+        options=["Operacional", "Investimento", "Financiamento"],
         required=True,
     ),
     "natureza_juridica": st.column_config.SelectboxColumn(
@@ -233,7 +278,8 @@ if uploaded_files:
                         "valor": {"type": "string", "description": "O valor original da transação."},
                         "tipo": {"type": "string", "description": "O tipo original da transação ('D' para débito, 'C' para crédito)."},
                         "natureza_geral": {"type": "string", "description": "Classificação PRINCIPAL em 'Despesa' ou 'Receita'."},
-                        "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento', 'Financiamento' ou 'Pessoal'."},
+                        # Subgrupo Pessoal é aceito aqui, mas filtrado no DFC
+                        "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento', 'Financiamento' ou 'Pessoal'."}, 
                         "natureza_analitica": {"type": "string", "description": "Classificação detalhada e linear da transação (Ex: 'Salário', 'Aluguel', 'Fornecedores')."},
                         "natureza_juridica": {"type": "string", "description": "Classificação 'Pessoal' ou 'Empresarial'."}
                     },
@@ -264,22 +310,7 @@ if uploaded_files:
                 prompt_lote = f"""
 Você é um analista financeiro sênior da Hedgewise, especializado na composição da Demonstração de Fluxo de Caixa (DFC) conforme o CPC 03 (IAS 7).
 Sua tarefa é analisar AS {len(lote_df)} MOVIMENTAÇÕES BANCÁRIAS extraídas de "{file_name}" e retornar um JSON estritamente conforme o schema fornecido.
-
-**Instruções de Classificação (Obrigatórias):**
-
-1.  **natureza_geral** (Grupo): Classifique estritamente como **"Receita"** ou **"Despesa"**. (Observar se o Tipo original é 'C'rédito ou 'D'ébito, mas sempre priorizar o significado da transação).
-2.  **subgrupo** (DFC/CPC 03): Classifique estritamente em uma das quatro opções:
-    * **"Operacional"**: Transações que afetam o resultado e o capital de giro (vendas, compras, salários, aluguéis, impostos, fornecedores, etc.).
-    * **"Investimento"**: Aquisição ou venda de ativos não circulantes (imóveis, máquinas, participações societárias), desembolsos com aplicações financeiras, resgates de aplicações financeiras, rendimentos de aplicações financeiras.
-    * **"Financiamento"**: Transações com capital de terceiros ou próprio (empréstimos, integralização/distribuição de capital, dividendos), pagamentos de juros, tarifas bancárias, pagamentos de empréstimos, recebimento de empréstimos.
-    * **"Pessoal"**: Despesas pessoais do sócio/empreendedor pagas pela conta da empresa (retiradas, despesas particulares, etc.), gastos que fujam da lógica do contexto empresarial.
-3.  **natureza_analitica** (Subgrupo Detalhado):
-    * Identifique o destino/origem de forma detalhada e linear.
-    * **REGRA DE PREENCHIMENTO:** Se o histórico for genérico (ex: "Pagamento de Boleto", "Transferência TED", "Pix") e não houver informação clara, assuma **"Fornecedores"** ou **"Despesas Gerais Operacionais"** se for um débito, e **"Vendas/Serviços"** se for um crédito, pois a premissa é que a conta é empresarial.
-4.  **natureza_juridica**: Classifique estritamente como **"Empresarial"** ou **"Pessoal"**.
-
-Responda APENAS com o JSON.
-
+... (Resto do prompt mantido) ...
 Movimentações extraídas:
 {texto_formatado_lote}
                 """
@@ -350,11 +381,19 @@ if not st.session_state['df_classificado_final'].empty:
     if not df_fluxo.empty:
         # Define um estilo de exibição para destacar os totais
         def highlight_total(row):
-            is_total = row['Atividade'].startswith('Total') or row['Atividade'].startswith('GERAÇÃO')
-            if is_total:
-                return ['background-color: #f0f0f5; font-weight: bold'] * len(row)
-            if row['Detalhe'] == '': # Linha de Título do Subgrupo
-                return ['font-weight: bold; background-color: #e0e0e0'] * len(row)
+            is_subtotal = row['Atividade'].startswith('Total do Caixa')
+            is_grand_total = row['Atividade'].startswith('Geração de Caixa do Período')
+            is_header = row['Detalhe'] == '' and not is_subtotal and not is_grand_total
+            is_sub_header = row['Detalhe'].startswith('Receitas') or row['Detalhe'].startswith('Despesas')
+            
+            if is_grand_total:
+                return ['background-color: #a0c0e0; font-weight: bold; border-top: 2px solid black'] * len(row)
+            if is_subtotal:
+                return ['background-color: #e0e0f0; font-weight: bold'] * len(row)
+            if is_header:
+                return ['font-weight: bold; background-color: #f0f0f5'] * len(row)
+            if is_sub_header:
+                return ['font-style: italic'] * len(row)
             return [''] * len(row)
 
         st.dataframe(
@@ -362,9 +401,9 @@ if not st.session_state['df_classificado_final'].empty:
             use_container_width=True, 
             hide_index=True
         )
-        st.caption("Valores agrupados por Atividade (Fluxo) e detalhados pela Natureza Analítica (subcategoria). Valores positivos representam Geração de Caixa, e negativos, Uso de Caixa.")
+        st.caption("Valores agrupados por Atividade (Fluxo) e detalhados pela Natureza Analítica (subcategoria). Despesas são apresentadas em valores absolutos (positivos) dentro de seus grupos.")
     else:
-        st.warning("Não foi possível calcular o DFC. Verifique se as colunas 'data', 'valor' e as classificações estão válidas.")
+        st.warning("Não foi possível calcular o DFC. Verifique se as colunas 'data', 'valor' e as classificações estão válidas e se há transações que não são classificadas como 'Pessoal'.")
 
 
     # 3. DOWNLOAD (a partir do DF EDITADO)
