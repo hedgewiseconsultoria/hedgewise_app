@@ -7,18 +7,20 @@ from google.genai import types
 from io import BytesIO
 from extrato_parser import extrair_texto_pdf, processar_extrato_principal 
 
-# ==================== FUNÇÕES DE CÁLCULO DFC (CORRIGIDA, ESTRUTURADA E ANALÍTICA) ====================
+# ==================== FUNÇÕES DE CÁLCULO DFC (CORRIGIDA E ESTRUTURADA) ====================
 
 def formatar_moeda(val):
     """Formata um valor float ou int para string no formato R$."""
     if isinstance(val, (int, float)):
-        # Formatação robusta: R$ 1.234,56 ou -R$ 1.234,56
+        # Retorna string vazia para zero ou NaN, mantendo a limpeza visual
         if pd.isna(val) or val == 0:
             return ""
+        
         if val < 0:
             val_abs = abs(val)
-            # Substitui ponto por vírgula e vírgula por ponto para formato BR
+            # Formato BR para negativo: -R$ 1.234,56
             return f"-R$ {val_abs:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        # Formato BR para positivo: R$ 1.234,56
         return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     return val
 
@@ -34,7 +36,7 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
 
     # 1. Pré-processamento e Limpeza
     try:
-        # Filtra a classificação "Pessoal" (conforme a nova regra)
+        # Filtra a classificação "Pessoal" (conforme a nova regra: Operacional, Investimento, Financiamento)
         df_calculo = df_calculo[df_calculo['subgrupo'].isin(["Operacional", "Investimento", "Financiamento"])]
 
         # Converte Data e extrai Mês/Ano
@@ -49,16 +51,15 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     # 2. Determinar o sinal do Fluxo (Receita = positivo, Despesa = negativo)
+    # Este é o valor que será agregado para todos os cálculos, incluindo o total do fluxo.
     df_calculo['Fluxo'] = df_calculo.apply(
         lambda row: row['valor'] if row['natureza_geral'].upper() == 'RECEITA' else -row['valor'], 
         axis=1
     )
 
-    # 3. Agrupamento Detalhado
-    # Agrupamos por subgrupo, natureza_geral, e natureza_analitica para o detalhe
+    # 3. Agrupamento Detalhado e Pivotagem
     df_agregado = df_calculo.groupby(['Mes_Ano', 'subgrupo', 'natureza_geral', 'natureza_analitica'])['Fluxo'].sum().reset_index()
 
-    # Pivotagem: Colunas de Meses e Índice Multi-nível
     df_pivot_detalhe = df_agregado.pivot_table(
         index=['subgrupo', 'natureza_geral', 'natureza_analitica'], 
         columns='Mes_Ano', 
@@ -68,6 +69,10 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
     
     colunas_meses = df_pivot_detalhe.columns.tolist()
 
+    # Define o Index de todas as linhas (Atividade, Detalhe, e todos os meses)
+    index_columns = ['Atividade', 'Detalhe'] + colunas_meses
+    empty_month_data = [''] * len(colunas_meses) # Dados vazios para linhas de título
+
     # 4. Construção do Relatório Hierárquico
     
     ordem_atividades = ["Operacional", "Investimento", "Financiamento"]
@@ -75,13 +80,17 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
     df_final_report = []
     
     for atividade in ordem_atividades:
-        # Linha de Título principal (Caixa Operacional, Investimento, Financiamento)
+        # 4.1. Linha de Título principal (Caixa Operacional, Investimento, Financiamento)
         titulo_atividade = f"Caixa de {atividade}" if atividade != "Operacional" else "Caixa Operacional"
-        df_final_report.append(pd.Series([titulo_atividade, ''], index=['Atividade', 'Detalhe'] + colunas_meses))
         
-        # DataFrame filtrado apenas para a Atividade atual
+        # CORREÇÃO DO VALUEERROR AQUI: Passamos um vetor de dados que tem o mesmo tamanho do index
+        data_title = [titulo_atividade, ''] + empty_month_data 
+        df_final_report.append(pd.Series(data_title, index=index_columns))
+        
+        # Verifica se há dados para a Atividade (Subgrupo) antes de continuar
         if atividade not in df_pivot_detalhe.index.get_level_values('subgrupo'):
-            df_final_report.append(pd.Series(['---', 'Nenhuma movimentação neste período'], index=['Atividade', 'Detalhe'] + colunas_meses))
+            data_no_data = ['', 'Nenhuma movimentação neste período'] + empty_month_data
+            df_final_report.append(pd.Series(data_no_data, index=index_columns))
             continue
 
         for natureza in ordem_geral:
@@ -90,64 +99,66 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
             try:
                 # Filtrar o MultiIndex para a atividade e a natureza
                 detalhes_natureza = df_pivot_detalhe.loc[(atividade, natureza)]
-                detalhes_natureza = detalhes_natureza.reset_index()
+                detalhes_natureza = detalhes_natureza.reset_index(level=['subgrupo', 'natureza_geral'], drop=True)
                 detalhes_natureza.rename(columns={'natureza_analitica': 'Detalhe'}, inplace=True)
                 
-                # Linha de Título da Natureza (Receitas/Despesas)
-                df_final_report.append(pd.Series(['', natureza.capitalize()], index=['Atividade', 'Detalhe'] + colunas_meses))
+                # 4.2. Linha de Título da Natureza (Receitas/Despesas)
+                data_sub_title = ['', natureza.capitalize()] + empty_month_data
+                df_final_report.append(pd.Series(data_sub_title, index=index_columns))
                 
-                # Adicionar as linhas de Detalhe (Natureza Analítica)
+                # 4.3. Adicionar as linhas de Detalhe (Natureza Analítica)
                 for index, row in detalhes_natureza.iterrows():
-                    # O valor detalhado para despesas deve ser mostrado em absoluto (positivo)
-                    linha = pd.Series({'Atividade': '', 'Detalhe': f"  {row['Detalhe']}"}, index=['Atividade', 'Detalhe'] + colunas_meses)
+                    data_detail_line = ['', f"  {row.name}"] # nome é a natureza_analitica
+                    
+                    # O valor detalhado para despesas (negativo na coluna 'Fluxo') deve ser mostrado em absoluto (positivo)
                     for mes in colunas_meses:
-                        linha[mes] = abs(row[mes]) if natureza == 'DESPESA' else row[mes]
-                    df_final_report.append(linha)
+                        val = abs(row[mes]) if natureza == 'DESPESA' else row[mes]
+                        data_detail_line.append(val)
+                        
+                    df_final_report.append(pd.Series(data_detail_line, index=index_columns))
                     
             except KeyError:
-                # Não há receitas ou despesas para esta atividade neste período
+                # Não há receitas ou despesas para esta combinação
                 continue
 
-        # 5. Cálculo e Adição do Subtotal da Atividade
+        # 4.4. Cálculo e Adição do Subtotal da Atividade
+        # O subtotal é a SOMA dos Fluxos (Receitas (+) e Despesas (-))
         subtotal_series = df_pivot_detalhe.loc[atividade].sum(axis=0)
-        subtotal_row = pd.Series({
-            'Atividade': f"Total do {titulo_atividade}", 
-            'Detalhe': ''
-        }, index=['Atividade', 'Detalhe'] + colunas_meses)
         
-        for mes in colunas_meses:
-            subtotal_row[mes] = subtotal_series[mes]
-            
-        df_final_report.append(subtotal_row)
-        df_final_report.append(pd.Series('', index=['Atividade', 'Detalhe'] + colunas_meses)) # Linha Vazia
+        subtotal_data = [f"Total do {titulo_atividade}", ''] + subtotal_series.tolist()
+        df_final_report.append(pd.Series(subtotal_data, index=index_columns))
+        
+        # Linha Vazia
+        df_final_report.append(pd.Series(['', ''] + empty_month_data, index=index_columns)) 
+
 
     # Concatena todas as Series em um DataFrame
     df_final = pd.DataFrame(df_final_report).reset_index(drop=True)
-    df_final = df_final[df_final['Atividade'] != '---'].reset_index(drop=True) # Remove linhas de "Nenhuma movimentação"
 
-    # 6. Adicionar a linha de Geração de Caixa Total
+    # 5. Adicionar a linha de Geração de Caixa do Período (Grand Total)
     
-    # Filtra apenas as linhas de Total do Caixa para somar
-    df_subtotais_apenas = df_final[df_final['Atividade'].str.startswith('Total do Caixa', na=False)]
+    # Soma todos os subtotais de fluxo (que já são a soma líquida de Receitas e Despesas)
+    df_subtotais = df_final[df_final['Atividade'].str.startswith('Total do Caixa', na=False)]
     
-    # Converte para float antes de somar e soma
-    total_caixa_series = df_subtotais_apenas[colunas_meses].apply(lambda x: pd.to_numeric(x.apply(lambda v: v.replace('R$ ', '').replace('.', '').replace(',', '.').replace('-', '') if isinstance(v, str) else v), errors='coerce')).sum(axis=0)
+    # É necessário converter para float para somar. Usamos a função auxiliar para extrair o valor.
+    def extract_float(val):
+        if isinstance(val, str) and val.startswith('R$'):
+            return pd.to_numeric(val.replace('R$ ', '').replace('.', '').replace(',', '.').replace('-', ''), errors='coerce') * (-1 if val.startswith('-') else 1)
+        return val # Deve ser float se não for string formatada ainda
+
+    total_caixa_series = df_final_report[-1].loc[colunas_meses].apply(extract_float).sum(axis=0) # Soma dos subtotais (última linha antes do total)
     
-    total_caixa_row = pd.Series({'Atividade': 'Geração de Caixa do Período', 'Detalhe': ''}, index=['Atividade', 'Detalhe'] + colunas_meses)
-    for mes in colunas_meses:
-        total_caixa_row[mes] = total_caixa_series[mes]
-        
+    total_caixa_row = ['Geração de Caixa do Período', ''] + total_caixa_series.tolist()
     df_final.loc[len(df_final)] = total_caixa_row
 
 
-    # 7. Formatação Numérica Final para R$
+    # 6. Formatação Numérica Final para R$
     for col in colunas_meses:
         # Garante que a coluna seja float antes de formatar. 
-        # NOTA: O cálculo já foi feito, aqui formatamos os resultados do total
-        df_final[col] = df_final[col].apply(formatar_moeda)
+        df_final[col] = pd.to_numeric(df_final[col], errors='coerce').apply(formatar_moeda)
 
-    # Limpeza de linhas de espaçamento
-    df_final.loc[df_final['Atividade'] == '', colunas_meses] = ''
+    # Limpa valores de texto nas colunas de mês que não fazem sentido (linhas de título)
+    df_final.loc[df_final['Detalhe'].isin(['Nenhuma movimentação neste período', 'Receitas', 'Despesas']) | (df_final['Atividade'] == ''), colunas_meses] = ''
     
     return df_final
 
@@ -169,8 +180,8 @@ COLUMN_CONFIG_EDITOR = {
     "subgrupo": st.column_config.SelectboxColumn(
         "Subgrupo (DFC/CPC 03)",
         help="Classificação DFC/CPC 03",
-        # REMOVIDO "Pessoal"
-        options=["Operacional", "Investimento", "Financiamento"],
+        # Subgrupos ajustados para Operacional, Investimento, Financiamento
+        options=["Operacional", "Investimento", "Financiamento", "Pessoal"],
         required=True,
     ),
     "natureza_juridica": st.column_config.SelectboxColumn(
@@ -278,7 +289,6 @@ if uploaded_files:
                         "valor": {"type": "string", "description": "O valor original da transação."},
                         "tipo": {"type": "string", "description": "O tipo original da transação ('D' para débito, 'C' para crédito)."},
                         "natureza_geral": {"type": "string", "description": "Classificação PRINCIPAL em 'Despesa' ou 'Receita'."},
-                        # Subgrupo Pessoal é aceito aqui, mas filtrado no DFC
                         "subgrupo": {"type": "string", "description": "Classificação DFC/CPC 03: 'Operacional', 'Investimento', 'Financiamento' ou 'Pessoal'."}, 
                         "natureza_analitica": {"type": "string", "description": "Classificação detalhada e linear da transação (Ex: 'Salário', 'Aluguel', 'Fornecedores')."},
                         "natureza_juridica": {"type": "string", "description": "Classificação 'Pessoal' ou 'Empresarial'."}
