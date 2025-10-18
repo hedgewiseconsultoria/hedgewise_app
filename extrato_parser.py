@@ -40,10 +40,13 @@ def linha_parece_sujo(linha: str) -> bool:
         r"\bconta\s+corrente\s*\|\s*movimenta", r"\blimite\b", r"\binvestimentos\b",
         r"\bdispon[ií]vel\b", r"\bbloqueado\b", 
         
-        # PADRÃO CORRIGIDO/ADICIONADO: Captura linhas simples de TOTAL com valor
-        r"^\s*total\s*r?\s*\$?\s*[\d\.\,]+\s*$", 
+        # AJUSTE SOLICITADO AQUI: Captura a palavra 'total' na linha.
+        # Usa um regex mais genérico para capturar "total" em qualquer parte da linha,
+        # mas prioriza a captura no início, como no extrato do Bradesco.
+        # O re.search(r"\btotal\b") já cobre a maioria dos casos.
+        r"^\s*total\s*(\s+de\s+)?(r?\s*\$?\s*[\d\.\,]+\s*|\s*|\s+entradas|\s+sa[ií]das|\s+cr[ée]ditos|\s+d[ée]bitos)?\s*$",
+        r"^\s*total\s+(de\s+)?(entradas|sa[ií]das|cr[ée]ditos|d[ée]bitos)\b", # Mantém o padrão anterior de total
         
-        r"\btotal\s+(de\s+)?(entradas|sa[ií]das|cr[ée]ditos|d[ée]bitos)\b",
         r"\bresumo\b", r"\bfale\s*conosco\b", r"\bouvidoria\b", r"\bpara\s+demais\s+siglas\b",
         r"\bnotas\s+explicativas\b", r"\btotalizador\b", r"\baplicações\s+automáticas\b",
         r"\bvalor\s+\(r\$\)\b", r"\bdocumento\b", r"\bdescri[cç][aã]o\b", r"\bcr[eé]ditos\b",
@@ -93,7 +96,7 @@ def normalizar_transacoes(transacoes):
 
 
 # ==================== PROCESSADORES POR BANCO ====================
-# (Mantidos inalterados, pois representam as 'tentativas' de extração)
+# (Mantidos inalterados, pois já usam linha_parece_sujo)
 
 def processar_extrato_bb(texto: str):
     """Banco do Brasil"""
@@ -314,7 +317,7 @@ def processar_extrato_sicoob(texto: str):
             historico = re.sub(r"(DOC\.:\s*\d+|CODIGO\s+TED:\s*T\d+)", "", historico, flags=re.IGNORECASE).strip()
             historico = re.sub(r"\s+", " ", historico).strip()
 
-            if historico and len(historico) > 2:
+            if historico and len(historico) > 2 and not linha_parece_sujo(historico):
                 trans.append({"Data": current_date, "Histórico": historico, "Valor": raw_val, "Tipo": tipo_flag.upper()})
             
             buffer = []
@@ -338,12 +341,11 @@ def processar_extrato_sicoob(texto: str):
             historico = re.sub(r"\s+", " ", historico).strip()
             
             # Evita capturar a linha de SALDO DO DIA/FINAL que termina apenas com valor
-            # OBS: Esta verificação é redundante se `linha_parece_sujo` funcionar, mas a mantemos como segurança.
             if not linha_parece_sujo(historico) and len(historico) > 2:
                 trans.append({"Data": current_date, "Histórico": historico, "Valor": raw_val, "Tipo": tipo})
 
             buffer = []
-        
+            
         elif linha and not linha_parece_sujo(linha):
             # Linha não tem data, nem valor/tipo. É continuação do histórico.
             buffer.append(linha)
