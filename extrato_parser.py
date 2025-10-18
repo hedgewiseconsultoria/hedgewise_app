@@ -38,14 +38,19 @@ def linha_parece_sujo(linha: str) -> bool:
         r"\bs\s*a\s*l\s*d\s*o\b", r"\bsaldo\s*(anterior|do\s+dia|total|atual|bloqueado|dispon[ií]vel|parcial|inicial|final|em\s+c/c)\b",
         r"\bsdo\s+(cta|apl|conta)\b", r"\bdetalhamento\b", r"\bextrato\b", r"\bcliente\b",
         r"\bconta\s+corrente\s*\|\s*movimenta", r"\blimite\b", r"\binvestimentos\b",
-        r"\bdispon[ií]vel\b", r"\bbloqueado\b", r"\btotal\s+(de\s+)?(entradas|sa[ií]das|cr[ée]ditos|d[ée]bitos)\b",
+        r"\bdispon[ií]vel\b", r"\bbloqueado\b", 
+        
+        # PADRÃO CORRIGIDO/ADICIONADO: Captura linhas simples de TOTAL com valor
+        r"^\s*total\s*r?\s*\$?\s*[\d\.\,]+\s*$", 
+        
+        r"\btotal\s+(de\s+)?(entradas|sa[ií]das|cr[ée]ditos|d[ée]bitos)\b",
         r"\bresumo\b", r"\bfale\s*conosco\b", r"\bouvidoria\b", r"\bpara\s+demais\s+siglas\b",
         r"\bnotas\s+explicativas\b", r"\btotalizador\b", r"\baplicações\s+automáticas\b",
         r"\bvalor\s+\(r\$\)\b", r"\bdocumento\b", r"\bdescri[cç][aã]o\b", r"\bcr[eé]ditos\b",
         r"\bd[eé]bitos\b", r"\bmovimenta[cç][aã]o\b", r"\bp[aá]gina\b", r"\bdata\s+lan[cç]amento\b",
         r"\bcomplemento\b", r"\bcentral\s+de\s+suporte\b", r"\bconta\s+corrente\s*\|\s*movimenta[cç][aã]o\b",
         r"\bvalores\s+em\s+r\$\b", r"\bper[ií]odo\s+de\b", r"\bsaldo\s*\+\s*limite\b",
-        r"\bcobran[cç]a\s+d[01]\b", r"\bcheque\s+empresarial\b", r"\bvencimento\s+cheque\b" # Adicionado Sicoob
+        r"\bcobran[cç]a\s+d[01]\b", r"\bcheque\s+empresarial\b", r"\bvencimento\s+cheque\b" 
     ]
     return any(re.search(p, texto, re.IGNORECASE) for p in padroes_lixo)
 
@@ -325,16 +330,15 @@ def processar_extrato_sicoob(texto: str):
             elif "receb.outra if" in historico_tentativa or "cred" in historico_tentativa or "transf.contas" in historico_tentativa:
                 tipo = "C"
             else:
-                # Se não puder inferir, assume que não é uma transação válida no padrão Sicoob (ou usa um chute padrão)
-                # Neste extrato específico, se for apenas valor, é provável que seja Débito (ex: Saldo do dia aparece com C)
-                # Vamos manter a lógica conservadora e só aceitar se o histórico ajudar, a não ser que seja muito limpo
-                tipo = "D" # Chute conservador para o Sicoob quando falta o C/D explícito
+                # Se não puder inferir, usa um chute padrão (ex: D) se o histórico for limpo
+                tipo = "D" 
 
             historico = " ".join(buffer + [linha[:m_val_only.start()].strip()]).strip()
             historico = re.sub(r"(DOC\.:\s*\d+|CODIGO\s+TED:\s*T\d+)", "", historico, flags=re.IGNORECASE).strip()
             historico = re.sub(r"\s+", " ", historico).strip()
             
             # Evita capturar a linha de SALDO DO DIA/FINAL que termina apenas com valor
+            # OBS: Esta verificação é redundante se `linha_parece_sujo` funcionar, mas a mantemos como segurança.
             if not linha_parece_sujo(historico) and len(historico) > 2:
                 trans.append({"Data": current_date, "Histórico": historico, "Valor": raw_val, "Tipo": tipo})
 
@@ -492,7 +496,7 @@ PROCESSADORES = {
     "SANTANDER": processar_extrato_santander,
     "CAIXA": processar_extrato_caixa,
     "XP": processar_extrato_xp,
-    "SICOOB": processar_extrato_sicoob, # <--- FUNÇÃO AJUSTADA
+    "SICOOB": processar_extrato_sicoob, 
     "BNB": processar_extrato_bnb,
     "NUBANK": processar_extrato_nubank,
     "INTER": processar_extrato_inter,
