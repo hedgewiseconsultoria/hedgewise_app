@@ -36,7 +36,7 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
 
     # 1. Pré-processamento e Limpeza
     try:
-        # Filtra a classificação "Pessoal" (conforme a nova regra: Operacional, Investimento, Financiamento)
+        # Filtra a classificação "Pessoal" (foco nos 3 fluxos principais)
         df_calculo = df_calculo[df_calculo['subgrupo'].isin(["Operacional", "Investimento", "Financiamento"])]
 
         # Converte Data e extrai Mês/Ano
@@ -51,7 +51,6 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     # 2. Determinar o sinal do Fluxo (Receita = positivo, Despesa = negativo)
-    # Este é o valor que será agregado para todos os cálculos, incluindo o total do fluxo.
     df_calculo['Fluxo'] = df_calculo.apply(
         lambda row: row['valor'] if row['natureza_geral'].upper() == 'RECEITA' else -row['valor'], 
         axis=1
@@ -68,10 +67,8 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
     )
     
     colunas_meses = df_pivot_detalhe.columns.tolist()
-
-    # Define o Index de todas as linhas (Atividade, Detalhe, e todos os meses)
     index_columns = ['Atividade', 'Detalhe'] + colunas_meses
-    empty_month_data = [''] * len(colunas_meses) # Dados vazios para linhas de título
+    empty_month_data = [''] * len(colunas_meses) 
 
     # 4. Construção do Relatório Hierárquico
     
@@ -79,28 +76,30 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
     ordem_geral = ["RECEITA", "DESPESA"]
     df_final_report = []
     
+    all_subtotals_data = {} # Armazena os subtotais de cada fluxo para o cálculo do total geral
+
     for atividade in ordem_atividades:
         # 4.1. Linha de Título principal (Caixa Operacional, Investimento, Financiamento)
         titulo_atividade = f"Caixa de {atividade}" if atividade != "Operacional" else "Caixa Operacional"
         
-        # CORREÇÃO DO VALUEERROR AQUI: Passamos um vetor de dados que tem o mesmo tamanho do index
         data_title = [titulo_atividade, ''] + empty_month_data 
         df_final_report.append(pd.Series(data_title, index=index_columns))
         
-        # Verifica se há dados para a Atividade (Subgrupo) antes de continuar
+        # Verifica se há dados para a Atividade (Subgrupo)
         if atividade not in df_pivot_detalhe.index.get_level_values('subgrupo'):
             data_no_data = ['', 'Nenhuma movimentação neste período'] + empty_month_data
             df_final_report.append(pd.Series(data_no_data, index=index_columns))
+            # Adiciona zeros para garantir que o total geral seja calculado corretamente
+            all_subtotals_data[atividade] = pd.Series([0.0] * len(colunas_meses), index=colunas_meses)
             continue
+
 
         for natureza in ordem_geral:
             
-            # Tenta obter os dados da natureza (Receita/Despesa)
             try:
                 # Filtrar o MultiIndex para a atividade e a natureza
                 detalhes_natureza = df_pivot_detalhe.loc[(atividade, natureza)]
                 detalhes_natureza = detalhes_natureza.reset_index(level=['subgrupo', 'natureza_geral'], drop=True)
-                detalhes_natureza.rename(columns={'natureza_analitica': 'Detalhe'}, inplace=True)
                 
                 # 4.2. Linha de Título da Natureza (Receitas/Despesas)
                 data_sub_title = ['', natureza.capitalize()] + empty_month_data
@@ -108,7 +107,7 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
                 
                 # 4.3. Adicionar as linhas de Detalhe (Natureza Analítica)
                 for index, row in detalhes_natureza.iterrows():
-                    data_detail_line = ['', f"  {row.name}"] # nome é a natureza_analitica
+                    data_detail_line = ['', f"  {index}"] 
                     
                     # O valor detalhado para despesas (negativo na coluna 'Fluxo') deve ser mostrado em absoluto (positivo)
                     for mes in colunas_meses:
@@ -118,15 +117,17 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
                     df_final_report.append(pd.Series(data_detail_line, index=index_columns))
                     
             except KeyError:
-                # Não há receitas ou despesas para esta combinação
                 continue
 
+
         # 4.4. Cálculo e Adição do Subtotal da Atividade
-        # O subtotal é a SOMA dos Fluxos (Receitas (+) e Despesas (-))
         subtotal_series = df_pivot_detalhe.loc[atividade].sum(axis=0)
         
         subtotal_data = [f"Total do {titulo_atividade}", ''] + subtotal_series.tolist()
         df_final_report.append(pd.Series(subtotal_data, index=index_columns))
+        
+        # Armazena a série do subtotal
+        all_subtotals_data[atividade] = subtotal_series
         
         # Linha Vazia
         df_final_report.append(pd.Series(['', ''] + empty_month_data, index=index_columns)) 
@@ -137,17 +138,14 @@ def calcular_demonstracao_fluxo_caixa(df: pd.DataFrame) -> pd.DataFrame:
 
     # 5. Adicionar a linha de Geração de Caixa do Período (Grand Total)
     
-    # Soma todos os subtotais de fluxo (que já são a soma líquida de Receitas e Despesas)
-    df_subtotais = df_final[df_final['Atividade'].str.startswith('Total do Caixa', na=False)]
-    
-    # É necessário converter para float para somar. Usamos a função auxiliar para extrair o valor.
-    def extract_float(val):
-        if isinstance(val, str) and val.startswith('R$'):
-            return pd.to_numeric(val.replace('R$ ', '').replace('.', '').replace(',', '.').replace('-', ''), errors='coerce') * (-1 if val.startswith('-') else 1)
-        return val # Deve ser float se não for string formatada ainda
-
-    total_caixa_series = df_final_report[-1].loc[colunas_meses].apply(extract_float).sum(axis=0) # Soma dos subtotais (última linha antes do total)
-    
+    # CORREÇÃO CRÍTICA DO ATTRIBUTEERROR: Somar as séries armazenadas.
+    if all_subtotals_data:
+        # Cria um DataFrame dos subtotais (índice é o mês), soma as colunas (fluxos)
+        total_caixa_series = pd.DataFrame(all_subtotals_data).T.sum(axis=0)
+    else:
+        total_caixa_series = pd.Series([0.0] * len(colunas_meses), index=colunas_meses)
+        
+    # Agora total_caixa_series é definitivamente uma Series, e tolist() funciona
     total_caixa_row = ['Geração de Caixa do Período', ''] + total_caixa_series.tolist()
     df_final.loc[len(df_final)] = total_caixa_row
 
